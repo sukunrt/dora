@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethpandaops/dora/clients/consensus/rpc"
 	"github.com/ethpandaops/dora/utils"
 	"github.com/ethpandaops/ethwallclock"
 	v1 "github.com/ethpandaops/go-eth2-client/api/v1"
@@ -25,8 +26,11 @@ type ChainState struct {
 	wallclockMutex sync.Mutex
 	wallclock      *ethwallclock.EthereumBeaconChain
 
-	finalityMutex sync.RWMutex
-	finality      *v1.Finality
+	finalityMutex   sync.RWMutex
+	finality        *v1.Finality
+	justifiedRound  uint64
+	finalizedRound  uint64
+	hasFinalityRnds bool
 
 	fastConfirmationMutex sync.RWMutex
 	fastConfirmedSlot     phase0.Slot
@@ -226,6 +230,60 @@ func (cs *ChainState) setFinalizedCheckpoint(finality *v1.Finality) {
 	cs.finalityMutex.Unlock()
 
 	cs.checkpointDispatcher.Fire(finality)
+}
+
+// setFinalityRounds records the fork's raw round-valued checkpoints. It is
+// separate from setFinalizedCheckpoint because that setter drops same-epoch
+// updates, and several rounds share one epoch. Highest value wins, like
+// setFastConfirmedBlock.
+func (cs *ChainState) setFinalityRounds(rounds *rpc.FinalityRounds) {
+	if rounds == nil {
+		return
+	}
+
+	cs.finalityMutex.Lock()
+	defer cs.finalityMutex.Unlock()
+
+	cs.hasFinalityRnds = true
+
+	if rounds.Justified > cs.justifiedRound {
+		cs.justifiedRound = rounds.Justified
+	}
+
+	if rounds.Finalized > cs.finalizedRound {
+		cs.finalizedRound = rounds.Finalized
+	}
+}
+
+// GetFinalityRounds returns the highest justified and finalized rounds any
+// client reported, and whether any client reported rounds at all.
+func (cs *ChainState) GetFinalityRounds() (justified uint64, finalized uint64, ok bool) {
+	cs.finalityMutex.RLock()
+	defer cs.finalityMutex.RUnlock()
+
+	return cs.justifiedRound, cs.finalizedRound, cs.hasFinalityRnds
+}
+
+// SlotsPerRound returns the fork's round length in slots, or 0 when the pool's
+// clients do not report one.
+func (cs *ChainState) SlotsPerRound() uint64 {
+	specs := cs.GetSpecs()
+	if specs == nil {
+		return 0
+	}
+
+	return specs.SlotsPerRound
+}
+
+// CurrentRound returns the round the wallclock is in, or 0 when the chain has no
+// rounds.
+func (cs *ChainState) CurrentRound() uint64 {
+	slotsPerRound := cs.SlotsPerRound()
+	if slotsPerRound == 0 {
+		return 0
+	}
+
+	return uint64(cs.CurrentSlot()) / slotsPerRound
 }
 
 func (cs *ChainState) GetSpecs() *ChainSpec {

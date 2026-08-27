@@ -147,18 +147,21 @@ type ChainSpecConfig struct {
 
 type ChainSpecPreset struct {
 	// Presets
-	MaxCommitteesPerSlot           uint64 `yaml:"MAX_COMMITTEES_PER_SLOT"`
-	TargetCommitteeSize            uint64 `yaml:"TARGET_COMMITTEE_SIZE"`
-	MaxValidatorsPerCommittee      uint64 `yaml:"MAX_VALIDATORS_PER_COMMITTEE"`
-	ShuffleRoundCount              uint64 `yaml:"SHUFFLE_ROUND_COUNT"`
-	HysteresisQuotient             uint64 `yaml:"HYSTERESIS_QUOTIENT"`
-	HysteresisDownwardMultiplier   uint64 `yaml:"HYSTERESIS_DOWNWARD_MULTIPLIER"`
-	HysteresisUpwardMultiplier     uint64 `yaml:"HYSTERESIS_UPWARD_MULTIPLIER"`
-	MinDepositAmount               uint64 `yaml:"MIN_DEPOSIT_AMOUNT"`
-	MaxEffectiveBalance            uint64 `yaml:"MAX_EFFECTIVE_BALANCE"`
-	EffectiveBalanceIncrement      uint64 `yaml:"EFFECTIVE_BALANCE_INCREMENT"`
-	MinAttestationInclusionDelay   uint64 `yaml:"MIN_ATTESTATION_INCLUSION_DELAY"`
-	SlotsPerEpoch                  uint64 `yaml:"SLOTS_PER_EPOCH"`
+	MaxCommitteesPerSlot         uint64 `yaml:"MAX_COMMITTEES_PER_SLOT"`
+	TargetCommitteeSize          uint64 `yaml:"TARGET_COMMITTEE_SIZE"`
+	MaxValidatorsPerCommittee    uint64 `yaml:"MAX_VALIDATORS_PER_COMMITTEE"`
+	ShuffleRoundCount            uint64 `yaml:"SHUFFLE_ROUND_COUNT"`
+	HysteresisQuotient           uint64 `yaml:"HYSTERESIS_QUOTIENT"`
+	HysteresisDownwardMultiplier uint64 `yaml:"HYSTERESIS_DOWNWARD_MULTIPLIER"`
+	HysteresisUpwardMultiplier   uint64 `yaml:"HYSTERESIS_UPWARD_MULTIPLIER"`
+	MinDepositAmount             uint64 `yaml:"MIN_DEPOSIT_AMOUNT"`
+	MaxEffectiveBalance          uint64 `yaml:"MAX_EFFECTIVE_BALANCE"`
+	EffectiveBalanceIncrement    uint64 `yaml:"EFFECTIVE_BALANCE_INCREMENT"`
+	MinAttestationInclusionDelay uint64 `yaml:"MIN_ATTESTATION_INCLUSION_DELAY"`
+	SlotsPerEpoch                uint64 `yaml:"SLOTS_PER_EPOCH"`
+	// SlotsPerRound only exists on the decoupled-casper fork. Warning severity so a
+	// pool mixing forked and stock clients warns instead of hard-mismatching.
+	SlotsPerRound                  uint64 `yaml:"SLOTS_PER_ROUND"                 check-severity:"warning"`
 	MinSeedLookahead               uint64 `yaml:"MIN_SEED_LOOKAHEAD"`
 	MaxSeedLookahead               uint64 `yaml:"MAX_SEED_LOOKAHEAD"`
 	EpochsPerEth1VotingPeriod      uint64 `yaml:"EPOCHS_PER_ETH1_VOTING_PERIOD"`

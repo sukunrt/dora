@@ -47,6 +47,8 @@ type Client struct {
 	justifiedEpoch                phase0.Epoch
 	finalizedRoot                 phase0.Root
 	finalizedEpoch                phase0.Epoch
+	justifiedRound                uint64
+	finalizedRound                uint64
 	fastConfirmedRoot             phase0.Root
 	fastConfirmedSlot             phase0.Slot
 	lastFastConfirmation          time.Time

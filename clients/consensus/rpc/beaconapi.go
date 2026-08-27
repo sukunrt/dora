@@ -3,6 +3,7 @@ package rpc
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -324,23 +325,146 @@ func (bc *BeaconClient) GetLatestBlockHead(ctx context.Context) (*v1.BeaconBlock
 	return result.Data, nil
 }
 
-func (bc *BeaconClient) GetFinalityCheckpoints(ctx context.Context) (*v1.Finality, error) {
-	provider, isProvider := bc.clientSvc.(eth2client.FinalityProvider)
-	if !isProvider {
-		return nil, fmt.Errorf("get finality not supported")
+// FinalityRounds carries the decoupled-casper fork's raw round-valued
+// checkpoints. The standard v1.Finality shape has no room for them, so they are
+// returned alongside it. Zero on stock clients, which omit the fields.
+type FinalityRounds struct {
+	PreviousJustified uint64
+	Justified         uint64
+	Finalized         uint64
+}
+
+type apiFinalityCheckpoint struct {
+	Epoch string `json:"epoch"`
+	Root  string `json:"root"`
+	Round string `json:"round"`
+}
+
+type apiFinalityCheckpoints struct {
+	Data struct {
+		PreviousJustified apiFinalityCheckpoint `json:"previous_justified"`
+		CurrentJustified  apiFinalityCheckpoint `json:"current_justified"`
+		Finalized         apiFinalityCheckpoint `json:"finalized"`
+	} `json:"data"`
+}
+
+func (c *apiFinalityCheckpoint) parse() (*phase0.Checkpoint, uint64, error) {
+	epoch, err := strconv.ParseUint(c.Epoch, 10, 64)
+	if err != nil {
+		return nil, 0, fmt.Errorf("could not parse checkpoint epoch %q: %v", c.Epoch, err)
 	}
 
-	result, err := provider.Finality(ctx, &api.FinalityOpts{
-		State: "head",
-		Common: api.CommonOpts{
-			Timeout: 0,
-		},
-	})
+	rootBytes, err := hex.DecodeString(strings.TrimPrefix(c.Root, "0x"))
+	if err != nil {
+		return nil, 0, fmt.Errorf("could not parse checkpoint root %q: %v", c.Root, err)
+	}
+
+	if len(rootBytes) != len(phase0.Root{}) {
+		return nil, 0, fmt.Errorf("checkpoint root %q has wrong length", c.Root)
+	}
+
+	var round uint64
+	if c.Round != "" {
+		round, err = strconv.ParseUint(c.Round, 10, 64)
+		if err != nil {
+			return nil, 0, fmt.Errorf("could not parse checkpoint round %q: %v", c.Round, err)
+		}
+	}
+
+	cp := &phase0.Checkpoint{Epoch: phase0.Epoch(epoch)}
+	copy(cp.Root[:], rootBytes)
+
+	return cp, round, nil
+}
+
+// GetFinalityCheckpoints fetches the finality checkpoints raw rather than via
+// go-eth2-client, so the fork's additive `round` fields survive decoding.
+func (bc *BeaconClient) GetFinalityCheckpoints(ctx context.Context) (*v1.Finality, *FinalityRounds, error) {
+	var resp apiFinalityCheckpoints
+
+	url := fmt.Sprintf("%s/eth/v1/beacon/states/head/finality_checkpoints", bc.endpoint)
+	if err := bc.getJSON(ctx, url, &resp); err != nil {
+		return nil, nil, fmt.Errorf("error retrieving finality checkpoints: %v", err)
+	}
+
+	previousJustified, previousJustifiedRound, err := resp.Data.PreviousJustified.parse()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	justified, justifiedRound, err := resp.Data.CurrentJustified.parse()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	finalized, finalizedRound, err := resp.Data.Finalized.parse()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	finality := &v1.Finality{
+		PreviousJustified: previousJustified,
+		Justified:         justified,
+		Finalized:         finalized,
+	}
+	rounds := &FinalityRounds{
+		PreviousJustified: previousJustifiedRound,
+		Justified:         justifiedRound,
+		Finalized:         finalizedRound,
+	}
+
+	return finality, rounds, nil
+}
+
+// RoundParticipation is the per-round FFG stake the fork's participation
+// endpoint reports.
+type RoundParticipation struct {
+	Round        uint64
+	VotedGwei    uint64
+	EligibleGwei uint64
+}
+
+type apiRoundParticipation struct {
+	Round         string `json:"round"`
+	Participation struct {
+		PreviousRoundActiveGwei          string `json:"previous_round_active_gwei"`
+		PreviousRoundTargetAttestingGwei string `json:"previous_round_target_attesting_gwei"`
+	} `json:"participation"`
+}
+
+// GetPrysmRoundParticipation fetches the FFG stake that voted in a finished
+// round. Only the decoupled fork serves the round parameter.
+func (bc *BeaconClient) GetPrysmRoundParticipation(ctx context.Context, round uint64) (*RoundParticipation, error) {
+	var resp apiRoundParticipation
+
+	url := fmt.Sprintf("%s/prysm/v1/validators/head/participation?round=%d", bc.endpoint, round)
+	if err := bc.getJSON(ctx, url, &resp); err != nil {
+		return nil, fmt.Errorf("error retrieving round participation: %v", err)
+	}
+
+	parse := func(name, value string) (uint64, error) {
+		if value == "" {
+			return 0, fmt.Errorf("participation response has no %s (client is not the decoupled fork?)", name)
+		}
+		return strconv.ParseUint(value, 10, 64)
+	}
+
+	sampled, err := parse("round", resp.Round)
 	if err != nil {
 		return nil, err
 	}
 
-	return result.Data, nil
+	eligible, err := parse("previous_round_active_gwei", resp.Participation.PreviousRoundActiveGwei)
+	if err != nil {
+		return nil, err
+	}
+
+	voted, err := parse("previous_round_target_attesting_gwei", resp.Participation.PreviousRoundTargetAttestingGwei)
+	if err != nil {
+		return nil, err
+	}
+
+	return &RoundParticipation{Round: sampled, VotedGwei: voted, EligibleGwei: eligible}, nil
 }
 
 func (bc *BeaconClient) GetBlockHeaderByBlockroot(ctx context.Context, blockroot phase0.Root) (*v1.BeaconBlockHeader, error) {

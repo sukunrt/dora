@@ -362,12 +362,21 @@ func (client *Client) updateFinalityCheckpoints(ctx context.Context) (phase0.Roo
 	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	finalizedCheckpoints, err := client.rpcClient.GetFinalityCheckpoints(ctx)
+	finalizedCheckpoints, rounds, err := client.rpcClient.GetFinalityCheckpoints(ctx)
 	if err != nil {
 		return NullRoot, err
 	}
 
 	client.lastFinalityUpdateEpoch = client.pool.chainState.CurrentEpoch()
+
+	// Rounds advance faster than the epochs they translate to, so record them
+	// before the unchanged-justified-root early return below drops the update.
+	client.headMutex.Lock()
+	client.justifiedRound = rounds.Justified
+	client.finalizedRound = rounds.Finalized
+	client.headMutex.Unlock()
+
+	client.pool.chainState.setFinalityRounds(rounds)
 
 	client.headMutex.Lock()
 	if bytes.Equal(client.justifiedRoot[:], finalizedCheckpoints.Justified.Root[:]) {
