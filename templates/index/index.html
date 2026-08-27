@@ -7,6 +7,12 @@
         <div class="startpage-panel">
           {{ template "recentEpochs" . }}
         </div>
+        <div data-bind="visible: rounds_enabled" {{ if not .RoundsEnabled }}style="display:none;"{{ end }}>
+          <div style="height:30px"></div>
+          <div class="startpage-panel">
+            {{ template "recentRounds" . }}
+          </div>
+        </div>
         <div style="height:30px"></div>
         <div class="startpage-panel">
           {{ template "recentBlocks" . }}
@@ -52,7 +58,7 @@
 {{ define "css" }}
 <link rel="stylesheet" href="/css/forkgraph.css?v={{ assetVersion }}" />
 <style>
-  #recent-epochs, #recent-blocks, #recent-slots {
+  #recent-epochs, #recent-rounds, #recent-blocks, #recent-slots {
     margin-bottom: 0;
   }
   #update_timer {

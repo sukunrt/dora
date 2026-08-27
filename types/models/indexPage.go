@@ -19,6 +19,12 @@ type IndexPageData struct {
 	CurrentScheduledCount   uint64    `json:"cur_scheduled"`
 	CurrentEpochProgress    float64   `json:"cur_epoch_prog"`
 	FcrEnabled              bool      `json:"fcr_enabled"`
+	RoundsEnabled           bool      `json:"rounds_enabled"`
+	SlotsPerRound           uint64    `json:"slots_per_round"`
+	CurrentRound            uint64    `json:"cur_round"`
+	CurrentFinalizedRound   int64     `json:"finalized_round"`
+	CurrentJustifiedRound   int64     `json:"justified_round"`
+	FinalizedRoundSlot      uint64    `json:"finalized_round_slot"`
 	SafeSlot                uint64    `json:"safe_slot"`
 	SafeRoot                []byte    `json:"safe_root" ssz-size:"32"`
 	ActiveValidatorCount    uint64    `json:"active_val"`
@@ -41,6 +47,8 @@ type IndexPageData struct {
 	RecentBlockCount uint64                 `json:"block_count"`
 	RecentEpochs     []*IndexPageDataEpochs `json:"epochs"`
 	RecentEpochCount uint64                 `json:"epoch_count"`
+	RecentRounds     []*IndexPageDataRounds `json:"rounds"`
+	RecentRoundCount uint64                 `json:"round_count"`
 	RecentSlots      []*IndexPageDataSlots  `json:"slots"`
 	RecentSlotCount  uint64                 `json:"slot_count"`
 	ForkTreeWidth    int32                  `json:"forktree_width"`
@@ -70,6 +78,20 @@ type IndexPageDataEpochs struct {
 	ProposalParticipation float64   `json:"proposalp"`
 	PayloadCount          uint64    `json:"payloads"`
 	PayloadParticipation  float64   `json:"payloadp"`
+}
+
+// IndexPageDataRounds is one row of the Recent Rounds panel. No field is
+// omitempty: the index page wraps every JSON key into a knockout observable on
+// the first payload, and a key that appears later would not get one.
+type IndexPageDataRounds struct {
+	Round             uint64    `json:"round"`
+	Ts                time.Time `json:"ts"`
+	Finalized         bool      `json:"finalized"`
+	Justified         bool      `json:"justified"`
+	HasParticipation  bool      `json:"has_votes"`
+	EligibleEther     uint64    `json:"eligible"`
+	TargetVoted       uint64    `json:"voted"`
+	VoteParticipation float64   `json:"votep"`
 }
 
 type IndexPageDataBlocks struct {

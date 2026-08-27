@@ -32,6 +32,7 @@ func Index(w http.ResponseWriter, r *http.Request) {
 		"index/networkOverview.html",
 		"index/recentBlocks.html",
 		"index/recentEpochs.html",
+		"index/recentRounds.html",
 		"index/recentSlots.html",
 		"_svg/timeline.html",
 	)
@@ -136,6 +137,18 @@ func buildIndexPageData(ctx context.Context) (*models.IndexPageData, time.Durati
 		FcrEnabled:            !lastFastConfirmation.IsZero(),
 		SafeSlot:              uint64(safeSlot),
 		SafeRoot:              safeRoot[:],
+	}
+
+	// round overview - only populated by the decoupled-casper fork
+	justifiedRound, finalizedRound, hasRounds := chainState.GetFinalityRounds()
+	slotsPerRound := chainState.SlotsPerRound()
+	if hasRounds && slotsPerRound > 0 {
+		pageData.RoundsEnabled = true
+		pageData.SlotsPerRound = slotsPerRound
+		pageData.CurrentRound = uint64(currentSlot) / slotsPerRound
+		pageData.CurrentFinalizedRound = int64(finalizedRound)
+		pageData.CurrentJustifiedRound = int64(justifiedRound)
+		pageData.FinalizedRoundSlot = finalizedRound * slotsPerRound
 	}
 	if utils.Config.Chain.DisplayName != "" {
 		pageData.NetworkName = utils.Config.Chain.DisplayName
@@ -337,6 +350,9 @@ func buildIndexPageData(ctx context.Context) (*models.IndexPageData, time.Durati
 	// load recent epochs
 	buildIndexPageRecentEpochsData(ctx, pageData, currentEpoch, finalizedEpoch, justifiedEpoch, recentEpochCount)
 
+	// load recent rounds
+	buildIndexPageRecentRoundsData(pageData, recentEpochCount)
+
 	// load recent blocks
 	buildIndexPageRecentBlocksData(ctx, pageData, recentBlockCount)
 
@@ -395,6 +411,50 @@ func buildIndexPageRecentEpochsData(ctx context.Context, pageData *models.IndexP
 		})
 	}
 	pageData.RecentEpochCount = uint64(len(pageData.RecentEpochs))
+}
+
+// buildIndexPageRecentRoundsData fills the Recent Rounds panel. Rounds are pure
+// arithmetic on the slot number; the voted/eligible stake comes from the
+// participation poller's ring buffer. Nothing here decodes committees.
+func buildIndexPageRecentRoundsData(pageData *models.IndexPageData, recentRoundCount int) {
+	pageData.RecentRounds = make([]*models.IndexPageDataRounds, 0)
+
+	if !pageData.RoundsEnabled {
+		return
+	}
+
+	chainState := services.GlobalBeaconService.GetChainState()
+	participation := services.GlobalBeaconService.GetRoundParticipationIndexer()
+
+	for i := 0; i < recentRoundCount; i++ {
+		if uint64(i) > pageData.CurrentRound {
+			break
+		}
+
+		round := pageData.CurrentRound - uint64(i)
+		roundData := &models.IndexPageDataRounds{
+			Round:     round,
+			Ts:        chainState.SlotToTime(phase0.Slot(round * pageData.SlotsPerRound)),
+			Finalized: pageData.CurrentFinalizedRound > 0 && uint64(pageData.CurrentFinalizedRound) >= round,
+			Justified: pageData.CurrentJustifiedRound > 0 && uint64(pageData.CurrentJustifiedRound) >= round,
+		}
+
+		if participation != nil {
+			if p := participation.GetRoundParticipation(round); p != nil {
+				roundData.HasParticipation = true
+				roundData.EligibleEther = p.EligibleGwei
+				roundData.TargetVoted = p.VotedGwei
+
+				if p.EligibleGwei > 0 {
+					roundData.VoteParticipation = float64(p.VotedGwei) * 100.0 / float64(p.EligibleGwei)
+				}
+			}
+		}
+
+		pageData.RecentRounds = append(pageData.RecentRounds, roundData)
+	}
+
+	pageData.RecentRoundCount = uint64(len(pageData.RecentRounds))
 }
 
 // resolveBuildSource maps a db builder index (-1 = self-built) to the model fields

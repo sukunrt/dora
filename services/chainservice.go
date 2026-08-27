@@ -49,6 +49,7 @@ type ChainService struct {
 	snooperManager        *snooper.SnooperManager
 	txIndexer             *txindexer.TxIndexer
 	ensResolver           *EnsResolver
+	roundParticipation    *RoundParticipationIndexer
 	started               bool
 
 	depositQueueIndexes depositQueueIndexCache
@@ -72,21 +73,23 @@ func InitChainService(ctx context.Context, logger logrus.FieldLogger) {
 	mevRelayIndexer := mevrelay.NewMevIndexer(ctx, logger.WithField("service", "mev-relay"), beaconIndexer, chainState)
 	snooperManager := snooper.NewSnooperManager(ctx, logger.WithField("service", "snooper-manager"), beaconIndexer)
 	ensResolver := NewEnsResolver(ctx, logger.WithField("service", "ens-resolver"), executionPool)
+	roundParticipation := NewRoundParticipationIndexer(ctx, logger.WithField("service", "round-participation"), consensusPool)
 
 	// Set execution time provider
 	beaconIndexer.SetExecutionTimeProvider(snooper.NewExecutionTimeProvider(snooperManager.GetCache()))
 
 	GlobalBeaconService = &ChainService{
-		ctx:               ctx,
-		logger:            logger,
-		consensusPool:     consensusPool,
-		executionPool:     executionPool,
-		beaconIndexer:     beaconIndexer,
-		validatorNames:    validatorNames,
-		buildoorInventory: buildoorInventory,
-		mevRelayIndexer:   mevRelayIndexer,
-		snooperManager:    snooperManager,
-		ensResolver:       ensResolver,
+		ctx:                ctx,
+		logger:             logger,
+		consensusPool:      consensusPool,
+		executionPool:      executionPool,
+		beaconIndexer:      beaconIndexer,
+		validatorNames:     validatorNames,
+		buildoorInventory:  buildoorInventory,
+		mevRelayIndexer:    mevRelayIndexer,
+		snooperManager:     snooperManager,
+		ensResolver:        ensResolver,
+		roundParticipation: roundParticipation,
 	}
 }
 
@@ -398,6 +401,9 @@ func (cs *ChainService) StartService() error {
 		cs.ensResolver.StartUpdater()
 	}
 
+	// start per-round participation poller (no-op on chains without rounds)
+	cs.roundParticipation.StartUpdater()
+
 	return nil
 }
 
@@ -473,6 +479,11 @@ func (bs *ChainService) GetConsensusClients() []*consensus.Client {
 
 func (bs *ChainService) GetExecutionClients() []*execution.Client {
 	return bs.executionPool.GetAllEndpoints()
+}
+
+// GetRoundParticipationIndexer returns the per-round FFG participation store.
+func (bs *ChainService) GetRoundParticipationIndexer() *RoundParticipationIndexer {
+	return bs.roundParticipation
 }
 
 func (bs *ChainService) GetChainState() *consensus.ChainState {

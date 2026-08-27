@@ -1,0 +1,93 @@
+{{ define "recentRounds" }}
+  <div class="card">
+    <div class="card-header">
+      <h5 class="card-title d-flex justify-content-between align-items-center" style="margin: .4rem 0;">
+        <span> <i class="fas fa-stopwatch"></i> Most recent rounds </span>
+      </h5>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-nobr" id="recent-rounds">
+          <thead>
+            <tr>
+              <th>Round</th>
+              <th data-timecol="duration">Time</th>
+              <th>Final</th>
+              <th><span data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="FFG target stake that voted in this round">Voted (ETH)</span></th>
+            </tr>
+          </thead>
+          <tbody class="template-tbody">
+            {{ html "<!-- ko foreach: rounds -->" }}
+            <tr class="template-row">
+              <td data-bind="text: $root.formatAddCommas(round)"></td>
+              <td data-bind="attr: {'data-timer': $root.unixtime(ts)}">
+                <span data-bs-toggle="tooltip" data-bs-placement="top" data-bind="attr: {'data-bs-title': $root.timestamp(ts)}, text: $root.formatRecentTimeShort(ts)"></span>
+              </td>
+              <td>
+                <span data-bind="if: finalized" class="badge badge-pill bg-success text-white" style="font-size: 12px; font-weight: 500;">Yes</span>
+                <span data-bind="if: !finalized && justified" class="badge badge-pill bg-warning text-white" style="font-size: 12px; font-weight: 500;" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Round is justified and will be finalized soon">Just.</span>
+                <span data-bind="ifnot: justified" class="badge badge-pill bg-warning text-white" style="font-size: 12px; font-weight: 500;">No</span>
+              </td>
+              <td>
+                {{ html "<!-- ko if: has_votes -->" }}
+                <div style="position:relative;width:inherit;height:inherit;">
+                  <small><span data-bind="text: $root.formatEth(voted)"></span> <span class="text-muted" data-bind="text: '(' + $root.formatFloat(votep, 2) + '%)'"></span></small>
+                  <div class="progress" style="position:absolute;bottom:-6px;width:100%;height:4px;">
+                    <div class="progress-bar" role="progressbar" data-bind="style: {width: $root.formatFloat(votep, 2)+'%'}, attr: {'aria-valuenow': $root.formatFloat(votep, 2)+'%'}" aria-valuemin="0" aria-valuemax="100"></div>
+                  </div>
+                </div>
+                {{ html "<!-- /ko -->" }}
+                {{ html "<!-- ko ifnot: has_votes -->" }}
+                <small class="text-muted">pending</small>
+                {{ html "<!-- /ko -->" }}
+              </td>
+            </tr>
+            {{ html "<!-- /ko -->" }}
+            {{ html "<!-- ko if: rounds().length == 0 -->" }}
+            <tr class="template-row">
+              <td style="text-align: center;" colspan="4">
+                no rounds found
+              </td>
+            </tr>
+            {{ html "<!-- /ko -->" }}
+            {{ if gt .RecentRoundCount 0 }}
+              {{ range $i, $round := .RecentRounds }}
+                <tr>
+                  <td>{{ formatAddCommas $round.Round }}</td>
+                  <td data-timer="{{ $round.Ts.Unix }}"><span data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="{{ $round.Ts }}">{{ formatRecentTimeShort $round.Ts }}</span></td>
+                  <td>
+                    {{ if $round.Finalized }}
+                      <span class="badge badge-pill bg-success text-white" style="font-size: 12px; font-weight: 500;">Yes</span>
+                    {{ else if $round.Justified }}
+                      <span class="badge badge-pill bg-warning text-white" style="font-size: 12px; font-weight: 500;" data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="Round is justified and will be finalized soon">Just</span>
+                    {{ else }}
+                      <span class="badge badge-pill bg-warning text-white" style="font-size: 12px; font-weight: 500;">No</span>
+                    {{ end }}
+                  </td>
+                  <td>
+                    {{ if $round.HasParticipation }}
+                      <div style="position:relative;width:inherit;height:inherit;">
+                        <small>{{ formatEthAddCommasFromGwei $round.TargetVoted }} <span class="text-muted">({{ formatFloat $round.VoteParticipation 2 }}%)</span></small>
+                        <div class="progress" style="position:absolute;bottom:-6px;width:100%;height:4px;">
+                          <div class="progress-bar" role="progressbar" style="width: {{ formatFloat $round.VoteParticipation 2 }}%;" aria-valuenow="{{ formatFloat $round.VoteParticipation 2 }}%" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                      </div>
+                    {{ else }}
+                      <small class="text-muted">pending</small>
+                    {{ end }}
+                  </td>
+                </tr>
+              {{ end }}
+            {{ else }}
+              <tr>
+                <td style="text-align: center;" colspan="4">
+                  no rounds found
+                </td>
+              </tr>
+            {{ end }}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{{ end }}

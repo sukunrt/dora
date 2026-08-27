@@ -24,6 +24,13 @@
                 <span data-bs-toggle="tooltip" data-bs-placement="top" title="The most recent finalized epoch" data-bind="text: finalized_epoch">{{ .CurrentFinalizedEpoch }}</span>
               </h5>
             </div>
+            <div class="p-2" data-bind="visible: rounds_enabled" {{ if not .RoundsEnabled }}style="display:none;"{{ end }}>
+              <div class="text-secondary mb-0">Round</div>
+              <h5 class="font-weight-normal mb-0">
+                <span data-bs-toggle="tooltip" data-bs-placement="top" title="The most recent round" data-bind="text: cur_round">{{ .CurrentRound }}</span> /
+                <span data-bs-toggle="tooltip" data-bs-placement="top" title="The most recent finalized round" data-bind="text: finalized_round">{{ .CurrentFinalizedRound }}</span>
+              </h5>
+            </div>
             <div class="text-end p-2">
               <div class="text-secondary mb-0">
                 Current Slot<span data-bind="visible: fcr_enabled" {{ if not .FcrEnabled }}style="display:none;"{{ end }}> / <span data-bs-toggle="tooltip" data-bs-placement="top" title="The most recent safe slot (fast confirmation rule)"><i class="fa-solid fa-shield-halved text-success"></i> Safe</span></span>
