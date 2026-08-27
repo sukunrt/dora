@@ -89,14 +89,32 @@ func LoadBeaconState(ctx context.Context, client *Client, root phase0.Root) (*al
 }
 
 // LoadExecutionPayload loads the execution payload from the client.
+//
+// The execution_payload_available event fires before the node has finished
+// validating and persisting the envelope (its timing serves the PTC deadline),
+// so an immediate fetch can see a 404, which the RPC layer reports as a nil
+// payload. Retry briefly instead of caching "no payload" for the block.
 func LoadExecutionPayload(ctx context.Context, client *Client, root phase0.Root) (*all.SignedExecutionPayloadEnvelope, error) {
-	ctx, cancel := context.WithTimeout(ctx, executionPayloadRequestTimeout)
-	defer cancel()
+	var payload *all.SignedExecutionPayloadEnvelope
+	var err error
 
-	payload, err := client.client.GetRPCClient().GetExecutionPayloadByBlockroot(ctx, root)
-	if err != nil {
-		return nil, err
+	for _, wait := range []time.Duration{0, 500 * time.Millisecond, time.Second, 2 * time.Second} {
+		if wait > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+
+		reqCtx, cancel := context.WithTimeout(ctx, executionPayloadRequestTimeout)
+		payload, err = client.client.GetRPCClient().GetExecutionPayloadByBlockroot(reqCtx, root)
+		cancel()
+
+		if payload != nil {
+			return payload, nil
+		}
 	}
 
-	return payload, nil
+	return payload, err
 }
