@@ -413,6 +413,10 @@ func (bc *BeaconClient) GetFinalityCheckpoints(ctx context.Context) (*v1.Finalit
 		Finalized:         finalizedRound,
 	}
 
+	if resp.Data.PreviousJustified.Round == "" && resp.Data.CurrentJustified.Round == "" && resp.Data.Finalized.Round == "" {
+		rounds = nil
+	}
+
 	return finality, rounds, nil
 }
 

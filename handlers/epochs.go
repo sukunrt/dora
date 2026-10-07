@@ -108,7 +108,6 @@ func buildEpochsPageData(ctx context.Context, firstEpoch uint64, pageSize uint64
 	pageData.MaxEpoch = uint64(currentEpoch)
 
 	specs := chainState.GetSpecs()
-	finalizedEpoch, _ := chainState.GetFinalizedCheckpoint()
 	justifiedEpoch, _ := chainState.GetJustifiedCheckpoint()
 	epochLimit := pageSize
 
@@ -122,15 +121,16 @@ func buildEpochsPageData(ctx context.Context, firstEpoch uint64, pageSize uint64
 	allSynchronized := true
 	for epochIdx := int64(firstEpoch); epochIdx >= 0 && epochCount < epochLimit; epochIdx-- {
 		epoch := uint64(epochIdx)
-		finalized := int64(finalizedEpoch) > 0 && int64(finalizedEpoch) >= epochIdx
+		finalized := chainState.IsEpochFinalized(phase0.Epoch(epoch))
 		if !finalized {
 			allFinalized = false
 		}
 		epochData := &models.EpochsPageDataEpoch{
-			Epoch:     epoch,
-			Ts:        chainState.EpochToTime(phase0.Epoch(epoch)),
-			Finalized: finalized,
-			Justified: justifiedEpoch > 0 && int64(justifiedEpoch) >= epochIdx,
+			EpochVotesUnavailable: chainState.SlotsPerRound() > 0,
+			Epoch:                 epoch,
+			Ts:                    chainState.EpochToTime(phase0.Epoch(epoch)),
+			Finalized:             finalized,
+			Justified:             justifiedEpoch > 0 && int64(justifiedEpoch) >= epochIdx,
 		}
 		if dbIdx < dbCnt && dbEpochs[dbIdx] != nil && dbEpochs[dbIdx].Epoch == epoch {
 			dbEpoch := dbEpochs[dbIdx]

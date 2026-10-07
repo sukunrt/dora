@@ -32,6 +32,7 @@ type EpochsPageDataEpoch struct {
 	Finalized               bool      `json:"finalized"`
 	Justified               bool      `json:"justified"`
 	Synchronized            bool      `json:"synchronized"`
+	EpochVotesUnavailable   bool      `json:"epoch_votes_unavailable"`
 	CanonicalBlockCount     uint64    `json:"canonical_block_count"`
 	OrphanedBlockCount      uint64    `json:"orphaned_block_count"`
 	AttestationCount        uint64    `json:"attestation_count"`

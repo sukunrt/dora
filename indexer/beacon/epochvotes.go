@@ -8,6 +8,7 @@ import (
 	"github.com/ethpandaops/dora/clients/consensus"
 	"github.com/ethpandaops/dora/indexer/beacon/duties"
 	"github.com/ethpandaops/go-eth2-client/spec"
+	"github.com/ethpandaops/go-eth2-client/spec/all"
 	"github.com/ethpandaops/go-eth2-client/spec/phase0"
 	"github.com/prysmaticlabs/go-bitfield"
 )
@@ -138,6 +139,7 @@ func (indexer *Indexer) aggregateEpochVotesAndActivity(epoch phase0.Epoch, chain
 		}
 	}
 
+	paymentVoters := make(map[phase0.Slot]bitfield.Bitlist)
 	deduplicationMap := map[voteDeduplicationKey]bool{}
 
 	for _, block := range blocks {
@@ -223,7 +225,12 @@ func (indexer *Indexer) aggregateEpochVotesAndActivity(epoch phase0.Epoch, chain
 			// unlike the FFG target — to that slot's payment quorum weight.
 			if slotWeights != nil {
 				if root, ok := blockRootBySlot[attData.Slot]; ok && bytes.Equal(attData.BeaconBlockRoot[:], root[:]) && int(slotIndex) < len(slotWeights) {
-					slotWeights[slotIndex] += voteAmount
+					voters := paymentVoters[slotIndex]
+					if voters == nil {
+						voters = bitfield.NewBitlist(epochStatsValues.ActiveValidators)
+					}
+					slotWeights[slotIndex] += votes.aggregatePaymentVotes(epochStatsValues, slotIndex, att, &voters)
+					paymentVoters[slotIndex] = voters
 				}
 			}
 
@@ -335,4 +342,25 @@ func (votes *EpochVotes) aggregateVotesWithoutDuties(deduplicationMap map[voteDe
 		}
 	}
 	return voteAmount
+}
+
+// aggregatePaymentVotes counts each validator once per slot independently of the
+// epoch-wide activity tally. Decoupled committees repeat every round, so a vote
+// counted earlier in the epoch must still contribute to a later slot's quorum.
+func (votes *EpochVotes) aggregatePaymentVotes(values *EpochStatsValues, slotIndex phase0.Slot, att *all.Attestation, voters *bitfield.Bitlist) phase0.Gwei {
+	amount := phase0.Gwei(0)
+	offset := uint64(0)
+	committees := []int{int(att.Data.Index)}
+	if att.Version >= spec.DataVersionElectra {
+		committees = att.CommitteeBits.BitIndices()
+	}
+	for _, committee := range committees {
+		if int(slotIndex) >= len(values.AttesterDuties) || committee >= len(values.AttesterDuties[slotIndex]) {
+			continue
+		}
+		weight, _, size := votes.aggregateVotes(values, slotIndex, uint64(committee), att.AggregationBits, offset, voters, nil, func(phase0.ValidatorIndex) {})
+		amount += weight
+		offset += size
+	}
+	return amount
 }

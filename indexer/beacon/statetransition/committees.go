@@ -68,7 +68,7 @@ func (c *committeeCache) put(slot phase0.Slot, index uint64, committee []phase0.
 // https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#get_committee_count_per_slot
 func (s *stateAccessor) getCommitteeCountPerSlot(epoch phase0.Epoch) uint64 {
 	activeCount := uint64(len(s.getActiveValidatorIndices(epoch)))
-	committeesPerSlot := activeCount / s.specs.SlotsPerEpoch / s.specs.TargetCommitteeSize
+	committeesPerSlot := activeCount / s.specs.CommitteeSlotsPerRound() / s.specs.TargetCommitteeSize
 	if committeesPerSlot > s.specs.MaxCommitteesPerSlot {
 		committeesPerSlot = s.specs.MaxCommitteesPerSlot
 	}
@@ -93,9 +93,9 @@ func (s *stateAccessor) getBeaconCommittee(slot phase0.Slot, committeeIndex uint
 	activeIndices := s.getActiveValidatorIndices(epoch)
 	seed := getSeed(s, epoch, phase0.DomainType(s.specs.DomainBeaconAttester))
 
-	slotIndex := uint64(slot) % s.specs.SlotsPerEpoch
+	slotIndex := uint64(slot) % s.specs.CommitteeSlotsPerRound()
 	index := slotIndex*committeesPerSlot + committeeIndex
-	count := committeesPerSlot * s.specs.SlotsPerEpoch
+	count := committeesPerSlot * s.specs.CommitteeSlotsPerRound()
 
 	committee := computeCommittee(activeIndices, seed, index, count, s.specs, cc)
 

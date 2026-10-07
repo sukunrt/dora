@@ -1,6 +1,8 @@
 package services
 
 import (
+	btypes "github.com/ethpandaops/dora/blockdb/types"
+	"github.com/ethpandaops/dora/clients/consensus"
 	"testing"
 
 	"github.com/ethpandaops/go-eth2-client/spec/phase0"
@@ -88,5 +90,29 @@ func TestWalkDependentRoot(t *testing.T) {
 				t.Fatalf("root = %x, want %x", gotRoot, tc.wantRoot)
 			}
 		})
+	}
+}
+
+func TestStoredRoundDutiesRejectEpochPartition(t *testing.T) {
+	specs := &consensus.ChainSpec{ChainSpecPreset: consensus.ChainSpecPreset{SlotsPerEpoch: 32, SlotsPerRound: 8}}
+	stored := &btypes.EpochDuties{SlotsPerEpoch: 32, Committees: make([][][]uint64, 32)}
+	for slot := range stored.Committees {
+		stored.Committees[slot] = [][]uint64{{uint64(slot)}}
+	}
+	if storedRoundDutiesMatch(specs, stored) {
+		t.Fatal("old epoch-based committee identities accepted on round chain")
+	}
+	for slot := range stored.Committees {
+		stored.Committees[slot] = [][]uint64{{uint64(slot % 8)}}
+	}
+	if !storedRoundDutiesMatch(specs, stored) {
+		t.Fatal("valid repeated round committees rejected")
+	}
+	stored.CommitteeSlotsPerRound = 32
+	if storedRoundDutiesMatch(specs, stored) {
+		t.Fatal("mismatched stored period accepted")
+	}
+	if storedRoundDutiesMatch(specs, nil) {
+		t.Fatal("missing duties reported available")
 	}
 }

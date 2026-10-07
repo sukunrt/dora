@@ -1,6 +1,9 @@
 package beacon
 
 import (
+	offbits "github.com/OffchainLabs/go-bitfield"
+	"github.com/ethpandaops/go-eth2-client/spec"
+	"github.com/ethpandaops/go-eth2-client/spec/all"
 	"testing"
 
 	"github.com/ethpandaops/dora/indexer/beacon/duties"
@@ -116,5 +119,37 @@ func TestEpochStatsPacked_SlashedIndicesRoundTrip(t *testing.T) {
 
 	if len(values.SlashedIndices) != 2 || values.SlashedIndices[0] != 1 || values.SlashedIndices[1] != 3 {
 		t.Errorf("SlashedIndices = %v, want [1 3]", values.SlashedIndices)
+	}
+}
+
+// A validator's slot-0 vote cannot consume their quorum weight at slot 8.
+func TestPaymentVotesRepeatAcrossRounds(t *testing.T) {
+	values := &EpochStatsValues{ActiveValidators: 2, ActiveIndices: []phase0.ValidatorIndex{10, 11}, EffectiveBalances: []uint32{32, 32}, AttesterDuties: make([][][]duties.ActiveIndiceIndex, 32)}
+	values.AttesterDuties[0] = [][]duties.ActiveIndiceIndex{{0, 1}}
+	values.AttesterDuties[8] = [][]duties.ActiveIndiceIndex{{0, 1}}
+	bits := bitfield.NewBitlist(2)
+	bits.SetBitAt(0, true)
+	bits.SetBitAt(1, true)
+	att := &all.Attestation{Version: spec.DataVersionGloas, Data: &phase0.AttestationData{}, AggregationBits: offbits.Bitlist(bits), CommitteeBits: make([]byte, 8)}
+	att.CommitteeBits.SetBitAt(0, true)
+	votes := &EpochVotes{}
+	epochActivity := bitfield.NewBitlist(2)
+	votes.aggregateVotes(values, 0, 0, bits, 0, &epochActivity, nil, func(phase0.ValidatorIndex) {})
+	// The epoch summary has already recorded these identities.
+	epochWeight, _, _ := votes.aggregateVotes(values, 8, 0, bits, 0, &epochActivity, nil, func(phase0.ValidatorIndex) {})
+	if epochWeight != 0 {
+		t.Fatal("test did not reproduce the epoch-wide deduplication condition")
+	}
+	slot0 := bitfield.NewBitlist(2)
+	slot8 := bitfield.NewBitlist(2)
+	want := phase0.Gwei(64) * EtherGweiFactor
+	if got := votes.aggregatePaymentVotes(values, 0, att, &slot0); got != want {
+		t.Fatalf("slot0 weight %d, want %d", got, want)
+	}
+	if got := votes.aggregatePaymentVotes(values, 8, att, &slot8); got != want {
+		t.Fatalf("repeat-round weight %d, want %d", got, want)
+	}
+	if got := votes.aggregatePaymentVotes(values, 8, att, &slot8); got != 0 {
+		t.Fatalf("duplicate aggregate double counted %d", got)
 	}
 }

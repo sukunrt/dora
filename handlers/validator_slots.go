@@ -97,7 +97,6 @@ func buildValidatorSlotsPageData(ctx context.Context, validator uint64, pageIdx 
 	pageData.LastPageSlot = 0
 
 	chainState := services.GlobalBeaconService.GetChainState()
-	finalizedEpoch, _ := services.GlobalBeaconService.GetFinalizedEpoch()
 
 	// load slots
 	pageData.Slots = make([]*models.ValidatorSlotsPageDataSlot, 0)
@@ -119,7 +118,7 @@ func buildValidatorSlotsPageData(ctx context.Context, validator uint64, pageIdx 
 			Slot:         slot,
 			Epoch:        uint64(epoch),
 			Ts:           chainState.SlotToTime(phase0.Slot(slot)),
-			Finalized:    finalizedEpoch >= epoch,
+			Finalized:    chainState.IsSlotFinalized(phase0.Slot(slot)),
 			Status:       uint8(0),
 			Proposer:     validator,
 			ProposerName: pageData.Name,

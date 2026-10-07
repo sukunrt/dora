@@ -80,8 +80,11 @@ func SubscribeWithRequest(lastEventID string, request *http.Request) (*Stream, e
 // SubscribeWith takes a http client and request providing customization over both headers and
 // control over the http client settings (timeouts, tls, etc)
 func SubscribeWith(lastEventID string, client *http.Client, request *http.Request) (*Stream, error) {
+	// Redirect policy belongs to this subscription, not the shared caller client.
+	streamClient := *client
+	streamClient.CheckRedirect = checkRedirect
 	stream := &Stream{
-		c:           client,
+		c:           &streamClient,
 		req:         request,
 		lastEventID: lastEventID,
 		retry:       time.Millisecond * 3000,
@@ -89,8 +92,6 @@ func SubscribeWith(lastEventID string, client *http.Client, request *http.Reques
 		Errors:      make(chan error, 10),
 		Ready:       make(chan bool),
 	}
-	stream.c.CheckRedirect = checkRedirect
-
 	r, err := stream.connect()
 	if err != nil {
 		return nil, err
@@ -112,6 +113,9 @@ func (stream *Stream) Close() {
 		}
 
 		stream.isClosed = true
+		if stream.retrySleepCancel != nil {
+			stream.retrySleepCancel()
+		}
 		close(stream.Errors)
 		close(stream.Events)
 	}()
@@ -119,7 +123,10 @@ func (stream *Stream) Close() {
 
 // RetryNow will force the stream to reconnect a disconnected stream immediately.
 func (stream *Stream) RetryNow() {
-	if cancelFn := stream.retrySleepCancel; cancelFn != nil {
+	stream.closeMutex.Lock()
+	cancelFn := stream.retrySleepCancel
+	stream.closeMutex.Unlock()
+	if cancelFn != nil {
 		cancelFn()
 	}
 }
@@ -156,10 +163,12 @@ func (stream *Stream) connect() (r io.ReadCloser, err error) {
 
 	if resp.StatusCode != 200 {
 		message, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		err = SubscriptionError{
 			Code:    resp.StatusCode,
 			Message: string(message),
 		}
+		return nil, err
 	}
 
 	r = resp.Body
@@ -226,12 +235,22 @@ func (stream *Stream) retryRestartStream() {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), backoff)
-		stream.retrySleepCancel = cancel
-		<-ctx.Done()
-
-		stream.retrySleepCancel = nil
-
+		stream.closeMutex.Lock()
 		if stream.isClosed {
+			stream.closeMutex.Unlock()
+			cancel()
+			return
+		}
+		stream.retrySleepCancel = cancel
+		stream.closeMutex.Unlock()
+		<-ctx.Done()
+		cancel()
+
+		stream.closeMutex.Lock()
+		stream.retrySleepCancel = nil
+		closed := stream.isClosed
+		stream.closeMutex.Unlock()
+		if closed {
 			return
 		}
 

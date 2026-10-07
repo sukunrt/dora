@@ -2,10 +2,15 @@ package services
 
 import (
 	"context"
+	"reflect"
+	"time"
 
 	"github.com/ethpandaops/go-eth2-client/spec/phase0"
+	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/ethpandaops/dora/blockdb"
+	btypes "github.com/ethpandaops/dora/blockdb/types"
+	"github.com/ethpandaops/dora/clients/consensus"
 	"github.com/ethpandaops/dora/db"
 	"github.com/ethpandaops/dora/indexer/beacon"
 )
@@ -142,6 +147,9 @@ func (bs *ChainService) GetSlotPtc(ctx context.Context, slot phase0.Slot) []phas
 	}
 
 	firstSlot := uint64(chainState.EpochStartSlot(epoch))
+	if chainState.GetSpecs().CommitteeSlotsPerRound() != chainState.GetSpecs().SlotsPerEpoch && !bs.storedRoundDutiesAvailable(ctx, firstSlot, phase0.Root{}) {
+		return nil
+	}
 	raw, err := blockdb.GlobalBlockDb.GetSlotPtc(ctx, firstSlot, uint64(slot))
 	if err != nil {
 		bs.logger.Debugf("failed to load ptc for slot %d from blockdb: %v", slot, err)
@@ -321,8 +329,7 @@ func (bs *ChainService) GetEpochProposersForRoot(ctx context.Context, epoch phas
 }
 
 // GetSlotPtcForRoot returns the PTC members for a slot, resolved on the fork
-// identified by depRoot. Falls back to the canonical PTC when no diverging
-// duties exist for depRoot.
+// identified by depRoot. Returns nil when that fork's duties are unavailable.
 func (bs *ChainService) GetSlotPtcForRoot(ctx context.Context, slot phase0.Slot, depRoot phase0.Root) []phase0.ValidatorIndex {
 	chainState := bs.consensusPool.GetChainState()
 	epoch := chainState.EpochOfSlot(slot)
@@ -345,6 +352,9 @@ func (bs *ChainService) GetSlotPtcForRoot(ctx context.Context, slot phase0.Slot,
 
 	if blockdb.GlobalBlockDb != nil && blockdb.GlobalBlockDb.SupportsDuties() && depRoot != (phase0.Root{}) {
 		firstSlot := uint64(chainState.EpochStartSlot(epoch))
+		if chainState.GetSpecs().CommitteeSlotsPerRound() != chainState.GetSpecs().SlotsPerEpoch && !bs.storedRoundDutiesAvailable(ctx, firstSlot, depRoot) {
+			return nil
+		}
 		raw, err := blockdb.GlobalBlockDb.GetSlotPtcForRoot(ctx, firstSlot, uint64(slot), depRoot)
 		if err != nil {
 			bs.logger.Debugf("failed to load ptc for slot %d (root %v) from blockdb: %v", slot, depRoot.String(), err)
@@ -353,7 +363,10 @@ func (bs *ChainService) GetSlotPtcForRoot(ctx context.Context, slot phase0.Slot,
 		}
 	}
 
-	return bs.GetSlotPtc(ctx, slot)
+	if depRoot == (phase0.Root{}) {
+		return bs.GetSlotPtc(ctx, slot)
+	}
+	return nil
 }
 
 // ResolveDependentRoot returns the committee-shuffling dependent root for the
@@ -473,4 +486,62 @@ func toValidatorIndices(raw []uint64) []phase0.ValidatorIndex {
 		out[i] = phase0.ValidatorIndex(v)
 	}
 	return out
+}
+
+// Old blockdb duties partitioned validators once per epoch. They cannot identify
+// PTC voters on a round chain; return unavailable until rebuilt from source state.
+func storedRoundDutiesMatch(specs *consensus.ChainSpec, stored *btypes.EpochDuties) bool {
+	if stored == nil || uint64(len(stored.Committees)) != specs.SlotsPerEpoch {
+		return false
+	}
+	period := specs.CommitteeSlotsPerRound()
+	if period == 0 || (stored.CommitteeSlotsPerRound != 0 && stored.CommitteeSlotsPerRound != period) {
+		return false
+	}
+	for slot, committees := range stored.Committees {
+		if len(committees) == 0 || !reflect.DeepEqual(committees, stored.Committees[uint64(slot)%period]) {
+			return false
+		}
+	}
+	return true
+}
+
+// Validation reads a whole epoch once; subsequent PTC requests retain narrow
+// per-slot reads. The bounded cache expires so rebuilt legacy history becomes
+// available without restarting the explorer.
+type roundDutiesCacheKey struct {
+	store     *blockdb.BlockDb
+	firstSlot uint64
+	root      phase0.Root
+	period    uint64
+}
+type roundDutiesValidation struct {
+	valid   bool
+	expires time.Time
+}
+
+var roundDutiesCache = func() *lru.Cache[roundDutiesCacheKey, roundDutiesValidation] {
+	cache, _ := lru.New[roundDutiesCacheKey, roundDutiesValidation](64)
+	return cache
+}()
+
+func (bs *ChainService) storedRoundDutiesAvailable(ctx context.Context, firstSlot uint64, root phase0.Root) bool {
+	specs := bs.consensusPool.GetChainState().GetSpecs()
+	key := roundDutiesCacheKey{blockdb.GlobalBlockDb, firstSlot, root, specs.CommitteeSlotsPerRound()}
+	if cached, ok := roundDutiesCache.Get(key); ok && time.Now().Before(cached.expires) {
+		return cached.valid
+	}
+	var stored *btypes.EpochDuties
+	var err error
+	if root == (phase0.Root{}) {
+		stored, err = blockdb.GlobalBlockDb.GetEpochDuties(ctx, firstSlot)
+	} else {
+		stored, err = blockdb.GlobalBlockDb.GetEpochDutiesForRoot(ctx, firstSlot, root)
+	}
+	if err != nil {
+		return false
+	}
+	valid := storedRoundDutiesMatch(specs, stored)
+	roundDutiesCache.Add(key, roundDutiesValidation{valid, time.Now().Add(time.Minute)})
+	return valid
 }

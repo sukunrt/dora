@@ -388,7 +388,6 @@ func buildFilteredSlotsPageData(ctx context.Context, pageIdx uint64, pageSize ui
 	}
 	pageData.LastPageSlot = 0
 
-	finalizedEpoch, _ := services.GlobalBeaconService.GetFinalizedEpoch()
 	currentSlot := chainState.CurrentSlot()
 
 	// load slots
@@ -534,7 +533,7 @@ func buildFilteredSlotsPageData(ctx context.Context, pageIdx uint64, pageSize ui
 			Slot:         uint64(slot),
 			Epoch:        uint64(epoch),
 			Ts:           chainState.SlotToTime(slot),
-			Finalized:    finalizedEpoch >= epoch,
+			Finalized:    chainState.IsSlotFinalized(slot),
 			Synchronized: true,
 			Scheduled:    slot >= currentSlot,
 			Proposer:     dbBlock.Proposer,
@@ -604,13 +603,12 @@ func buildFilteredSlotsPageData(ctx context.Context, pageIdx uint64, pageSize ui
 			// Gloas builder-payment vote quorum (same-slot attester balance vs per-slot base).
 			// Only meaningful for builder-built blocks; base is recovered from weight/percent.
 			if pageData.DisplayBuilderPayment && dbBlock.Block.Status > 0 && chainState.IsEip7732Enabled(epoch) {
-				slotData.HasBuilderPayment = true
-				slotData.BuilderPaymentWeight = dbBlock.Block.BuilderPaymentWeight
-				slotData.BuilderPaymentPercent = float64(dbBlock.Block.BuilderPaymentPercent)
-				slotData.BuilderPaymentMetQuorum = slotData.BuilderPaymentPercent >= statetransition.BuilderPaymentQuorumPercent
-				if dbBlock.Block.BuilderPaymentPercent > 0 {
-					slotData.BuilderPaymentBase = uint64(float64(dbBlock.Block.BuilderPaymentWeight) / float64(dbBlock.Block.BuilderPaymentPercent) * 100)
-				}
+				payment := resolveSlotBuilderPayment(dbBlock.Block)
+				slotData.HasBuilderPayment = payment.BaseKnown || chainState.GetSpecs().CommitteeSlotsPerRound() == chainState.GetSpecs().SlotsPerEpoch
+				slotData.BuilderPaymentWeight = payment.Weight
+				slotData.BuilderPaymentBase = payment.Base
+				slotData.BuilderPaymentPercent = payment.Percent
+				slotData.BuilderPaymentMetQuorum = payment.MetQuorum
 			}
 
 			// Add execution times if available

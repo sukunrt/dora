@@ -82,6 +82,12 @@
           <div class="col-md-3">Txs / Blobs:</div>
           <div class="col-md-9">{{ .EthTransactionCount }} / {{ .BlobCount }}</div>
         </div>
+        {{ if .EpochVotesUnavailable }}
+        <div class="row border-bottom p-2 mx-0">
+          <div class="col-md-3">Votes:</div>
+          <div class="col-md-9">Epoch vote participation is unavailable on this round-based network. <a href="/#recent-rounds">View round participation</a>.</div>
+        </div>
+        {{ else }}
         <div class="row border-bottom p-2 mx-0">
           <div class="col-md-3">Target Votes:</div>
           <div class="col-md-9">
@@ -120,6 +126,7 @@
             </div>
           </div>
         </div>
+        {{ end }}
         <div class="row border-bottom p-2 mx-0">
           <div class="col-md-3">Sync Participation:</div>
           <div class="col-md-9">
@@ -132,6 +139,7 @@
             </div>
           </div>
         </div>
+        {{ if not .EpochVotesUnavailable }}
         <div class="row border-bottom p-2 mx-0">
           <div class="col-md-3"></div>
           <div class="col-md-9">
@@ -144,6 +152,7 @@
             </small>
           </div>
         </div>
+        {{ end }}
         <div class="row border-bottom p-2 mx-0">
           <div class="col-md-3">Validators:</div>
           <div class="col-md-9">{{ formatAddCommas .ValidatorCount }}</div>

@@ -7,12 +7,14 @@ import (
 	"strconv"
 
 	"github.com/ethpandaops/dora/services"
+	"github.com/ethpandaops/dora/types/models"
 	"github.com/ethpandaops/go-eth2-client/spec/phase0"
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
 )
 
 type APIEpochResponseV1 struct {
+	EpochVotesUnavailable   bool   `json:"epoch_votes_unavailable"`
 	Epoch                   uint64 `json:"epoch"`
 	Ts                      uint64 `json:"ts"`
 	AttestationsCount       uint64 `json:"attestationscount"`
@@ -22,7 +24,7 @@ type APIEpochResponseV1 struct {
 	DepositsCount           uint64 `json:"depositscount"`
 	EligibleEther           uint64 `json:"eligibleether"`
 	Finalized               bool   `json:"finalized"`
-	GlobalParticipationRate uint64 `json:"globalparticipationrate"`
+	GlobalParticipationRate uint64 `json:"globalparticipationrate" extensions:"x-nullable"`
 	MissedBlocks            uint64 `json:"missedblocks"`
 	OrphanedBlocks          uint64 `json:"orphanedblocks"`
 	ProposedBlocks          uint64 `json:"proposedblocks"`
@@ -33,15 +35,20 @@ type APIEpochResponseV1 struct {
 	TotalValidatorBalance   uint64 `json:"totalvalidatorbalance"`
 	ValidatorsCount         uint64 `json:"validatorscount"`
 	VoluntaryExitsCount     uint64 `json:"voluntaryexitscount"`
-	VotedEther              uint64 `json:"votedether"`
+	VotedEther              uint64 `json:"votedether" extensions:"x-nullable"`
 	RewardsExported         uint64 `json:"rewards_exported"`
 	WithdrawalCount         uint64 `json:"withdrawalcount"`
+}
+
+func (data *APIEpochResponseV1) MarshalJSON() ([]byte, error) {
+	type plain APIEpochResponseV1
+	return models.MarshalEpochVotes((*plain)(data), data.EpochVotesUnavailable, "globalparticipationrate", "votedether")
 }
 
 // ApiEpoch godoc
 // @Summary Get epoch by number, latest, finalized
 // @Tags Epoch
-// @Description Returns information for a specified epoch by the epoch number or an epoch tag (can be latest or finalized)
+// @Description Returns information for a specified epoch by the epoch number or an epoch tag (can be latest or finalized). On round-based networks, epoch_votes_unavailable is true and globalparticipationrate and votedether are null; use round participation instead.
 // @Produce  json
 // @Param  epoch path string true "Epoch number, the string latest or the string finalized"
 // @Success 200 {object} ApiResponse{data=APIEpochResponseV1} "Success"
@@ -81,9 +88,10 @@ func ApiEpochV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := &APIEpochResponseV1{
-		Epoch:     uint64(epoch),
-		Ts:        uint64(chainState.EpochToTime(phase0.Epoch(epoch)).Unix()),
-		Finalized: finalizedEpoch >= phase0.Epoch(epoch),
+		EpochVotesUnavailable: chainState.SlotsPerRound() > 0,
+		Epoch:                 uint64(epoch),
+		Ts:                    uint64(chainState.EpochToTime(phase0.Epoch(epoch)).Unix()),
+		Finalized:             chainState.IsEpochFinalized(phase0.Epoch(epoch)),
 	}
 
 	dbEpochs := services.GlobalBeaconService.GetDbEpochs(r.Context(), uint64(epoch), 1)

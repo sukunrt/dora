@@ -15,6 +15,8 @@ const FarFutureEpoch = phase0.Epoch(math.MaxUint64)
 
 // ChainHead represents a head block of the chain.
 type ChainHead struct {
+	EpochVotesUnavailable bool
+	ReadyClientCount      int
 	HeadBlock             *Block        // The head block of the chain.
 	AggregatedHeadVotes   phase0.Gwei   // The aggregated votes of the last 2 epochs for the head block.
 	PerEpochVotingPercent []float64     // The voting percentage in the last epochs.
@@ -24,6 +26,8 @@ type ChainHead struct {
 // GetCanonicalHead returns the canonical head block of the chain.
 func (indexer *Indexer) GetCanonicalHead(overrideForkId *ForkKey) *Block {
 	indexer.computeCanonicalChain()
+	indexer.canonicalHeadMutex.Lock()
+	defer indexer.canonicalHeadMutex.Unlock()
 
 	if overrideForkId != nil && indexer.canonicalHead != nil && indexer.canonicalHead.forkId != *overrideForkId {
 		chainHeads := indexer.cachedChainHeads
@@ -44,6 +48,8 @@ func (indexer *Indexer) GetCanonicalHead(overrideForkId *ForkKey) *Block {
 // GetChainHeads returns the chain heads sorted by voting percentages.
 func (indexer *Indexer) GetChainHeads() []*ChainHead {
 	indexer.computeCanonicalChain()
+	indexer.canonicalHeadMutex.Lock()
+	defer indexer.canonicalHeadMutex.Unlock()
 
 	heads := make([]*ChainHead, len(indexer.cachedChainHeads))
 	copy(heads, indexer.cachedChainHeads)
@@ -77,6 +83,10 @@ func (indexer *Indexer) IsCanonicalBlockByHead(block *Block, headBlock *Block) b
 func (indexer *Indexer) computeCanonicalChain() bool {
 	indexer.canonicalHeadMutex.Lock()
 	defer indexer.canonicalHeadMutex.Unlock()
+
+	if indexer.consensusPool.GetChainState().SlotsPerRound() > 0 {
+		return indexer.computeRoundCanonicalChain()
+	}
 
 	if indexer.blockCache.latestBlock == nil {
 		return false

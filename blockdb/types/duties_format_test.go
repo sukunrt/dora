@@ -1,6 +1,10 @@
 package types
 
 import (
+	"bytes"
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -279,5 +283,155 @@ func TestIndexListRoundTrip(t *testing.T) {
 	got := DecodeIndexList(blob, DutiesIndexWidth)
 	if !reflect.DeepEqual(got, indices) {
 		t.Fatalf("index list mismatch: got %v want %v", got, indices)
+	}
+}
+
+// buildRoundDuties uses one complete validator permutation per round, repeated
+// across the epoch. Uneven committee lengths follow the per-round split.
+func buildRoundDuties(validatorCount, slotsPerEpoch, slotsPerRound, committeesPerSlot, ptcSize uint64) *EpochDuties {
+	d := buildTestEpochDuties(validatorCount, slotsPerRound, committeesPerSlot, ptcSize)
+	oneRound := d.Committees
+	d.SlotsPerEpoch = slotsPerEpoch
+	d.CommitteeSlotsPerRound = slotsPerRound
+	d.Committees = make([][][]uint64, slotsPerEpoch)
+	d.ProposerDuties = make([]uint64, slotsPerEpoch)
+	if ptcSize > 0 {
+		d.Ptc = make([][]uint64, slotsPerEpoch)
+	}
+	for slot := range slotsPerEpoch {
+		d.Committees[slot] = oneRound[slot%slotsPerRound]
+		d.ProposerDuties[slot] = 1000 + slot
+		if ptcSize > 0 {
+			d.Ptc[slot] = make([]uint64, ptcSize)
+			for i := range ptcSize {
+				d.Ptc[slot][i] = (slot + i) % validatorCount
+			}
+		}
+	}
+	d.DependentRoot = [32]byte{0x42}
+	d.Diverging = true
+	return d
+}
+
+func TestRoundEpochDutiesRoundTripAndRanges(t *testing.T) {
+	for _, validatorCount := range []uint64{320, 321} {
+		t.Run(fmt.Sprint(validatorCount), func(t *testing.T) {
+			src := buildRoundDuties(validatorCount, 32, 8, 2, 7)
+			encoded, err := EncodeEpochDuties(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			header, err := DecodeDutiesHeader(encoded[:DutiesHeaderSizeV3])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if header.Version != 3 || header.ValidatorCount != validatorCount || header.CommitteeSlotsPerRound != 8 {
+				t.Fatalf("wrong round header: %+v", header)
+			}
+			expectedSize := uint64(DutiesHeaderSizeV3) + (validatorCount*4+32+32*7)*uint64(DutiesIndexWidth)
+			if uint64(len(encoded)) != expectedSize {
+				t.Fatalf("object size=%d want=%d", len(encoded), expectedSize)
+			}
+			decoded, err := DecodeEpochDuties(src.FirstSlot, encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(decoded, src) {
+				t.Fatal("round object did not round trip")
+			}
+			// These slices model the S3 backend's independent range reads.
+			for slot := range src.SlotsPerEpoch {
+				off, length := header.AttesterSlotRange(slot)
+				committees, err := header.SplitSlotCommittees(slot, encoded[off:off+length])
+				if err != nil || !reflect.DeepEqual(committees, src.Committees[slot]) {
+					t.Fatalf("slot %d ranged committees mismatch: %v", slot, err)
+				}
+				off, length = header.PtcSlotRange(slot)
+				ptc := DecodeIndexList(encoded[off:off+length], header.IndexWidth)
+				if !reflect.DeepEqual(ptc, src.Ptc[slot]) {
+					t.Fatalf("slot %d ranged PTC mismatch", slot)
+				}
+			}
+			off, length := header.ProposerSectionRange()
+			if !reflect.DeepEqual(DecodeIndexList(encoded[off:off+length], header.IndexWidth), src.ProposerDuties) {
+				t.Fatal("ranged proposers mismatch")
+			}
+			if validatorCount == 321 && len(decoded.Committees[0][0]) != len(decoded.Committees[8][0]) {
+				t.Fatal("uneven split must repeat each round")
+			}
+			for _, cut := range []int{DutiesHeaderSizeV3, len(encoded) - 1} {
+				if _, err := DecodeEpochDuties(src.FirstSlot, encoded[:cut]); err == nil {
+					t.Fatalf("truncation at %d accepted", cut)
+				}
+			}
+		})
+	}
+}
+
+func TestStockDutiesV2BytesUnchanged(t *testing.T) {
+	fixture, err := hex.DecodeString("445554590002000600000000000000640000000000000004000000020000000100000001000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000002000000000003000000000007000000000008000000000000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := buildTestEpochDuties(4, 2, 1, 1)
+	d.DependentRoot = [32]byte{1}
+	d.ProposerDuties = []uint64{7, 8}
+	for _, period := range []uint64{0, 2} {
+		d.CommitteeSlotsPerRound = period
+		encoded, err := EncodeEpochDuties(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(encoded, fixture) {
+			t.Fatal("standard v2 bytes changed")
+		}
+	}
+	decoded, err := DecodeEpochDuties(d.FirstSlot, fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.CommitteeSlotsPerRound != 0 || !reflect.DeepEqual(decoded.Committees, d.Committees) {
+		t.Fatal("legacy v2 semantics changed")
+	}
+	// Reserved bytes in existing v2 objects must not become a round period.
+	binary.BigEndian.PutUint32(fixture[36:40], 7)
+	h, err := DecodeDutiesHeader(fixture)
+	if err != nil || h.CommitteeSlotsPerRound != 0 {
+		t.Fatalf("legacy reserved bytes interpreted as round metadata: %v", err)
+	}
+}
+
+func TestRoundDutiesRejectMalformedShapes(t *testing.T) {
+	for _, mutate := range []func(*EpochDuties){
+		func(d *EpochDuties) { d.CommitteeSlotsPerRound = 3 },
+		func(d *EpochDuties) { d.CommitteeSlotsPerRound = 33 },
+		func(d *EpochDuties) { d.Committees[0] = nil },
+		func(d *EpochDuties) { d.Committees[1][0] = append(d.Committees[1][0], 7) },
+	} {
+		d := buildRoundDuties(321, 32, 8, 2, 0)
+		mutate(d)
+		if _, err := EncodeEpochDuties(d); err == nil {
+			t.Fatal("malformed round duties accepted")
+		}
+	}
+	header := EncodeDutiesHeader(buildRoundDuties(321, 32, 8, 2, 0))
+	for _, period := range []uint32{0, 3, 33} {
+		bad := bytes.Clone(header)
+		binary.BigEndian.PutUint32(bad[36:40], period)
+		if _, err := DecodeDutiesHeader(bad); err == nil {
+			t.Fatalf("invalid period %d accepted", period)
+		}
+	}
+	bad := bytes.Clone(header)
+	binary.BigEndian.PutUint16(bad[4:6], DutiesFormatVersion+1)
+	if _, err := DecodeDutiesHeader(bad); err == nil {
+		t.Fatal("unknown format version accepted")
+	}
+	bad = bytes.Clone(header)
+	binary.BigEndian.PutUint64(bad[16:24], maxIndexValue)
+	binary.BigEndian.PutUint32(bad[24:28], 1<<32-1)
+	binary.BigEndian.PutUint32(bad[36:40], 1)
+	if _, err := DecodeDutiesHeader(bad); err == nil {
+		t.Fatal("overflowing repeated attester section accepted")
 	}
 }

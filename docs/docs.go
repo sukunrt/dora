@@ -669,7 +669,7 @@ const docTemplate = `{
         },
         "/v1/epoch/{epoch}": {
             "get": {
-                "description": "Returns information for a specified epoch by the epoch number or an epoch tag (can be latest or finalized)",
+                "description": "Returns information for a specified epoch by the epoch number or an epoch tag (can be latest or finalized). On round-based networks, epoch_votes_unavailable is true and globalparticipationrate and votedether are null; use round participation instead.",
                 "produces": [
                     "application/json"
                 ],
@@ -797,7 +797,7 @@ const docTemplate = `{
         },
         "/v1/epoch/{epoch}/health": {
             "get": {
-                "description": "Returns the vote, proposal and payload participation rates for an epoch. The chain is only fully healthy when all three reach 100%. Post-ePBS (EIP-7732) payloads are revealed separately from beacon blocks and may be missing.",
+                "description": "Returns the vote, proposal and payload participation rates for an epoch. The chain is only fully healthy when all three reach 100%. On round-based networks, epoch_votes_unavailable is true and voted_ether, vote_participation, and healthy are null. Post-ePBS (EIP-7732) payloads are revealed separately from beacon blocks and may be missing.",
                 "produces": [
                     "application/json"
                 ],
@@ -851,7 +851,7 @@ const docTemplate = `{
         },
         "/v1/epochs": {
             "get": {
-                "description": "Returns a list of epochs with detailed information and statistics",
+                "description": "Returns a list of epochs with detailed information and statistics. On round-based networks, epoch_votes_unavailable is true and target_voted, head_voted, total_voted, and vote_participation are null; use round participation instead.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1128,7 +1128,7 @@ const docTemplate = `{
         },
         "/v1/network/splits": {
             "get": {
-                "description": "Returns information about active network forks/splits, their participation rates, and head blocks",
+                "description": "Returns information about active network forks/splits, their participation rates, and head blocks. On round-based networks, forks follow ready clients' reported heads; epoch_votes_unavailable is true and epoch vote/weight metrics are null. ready_client_count records supporting endpoints, not consensus stake.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3654,11 +3654,15 @@ const docTemplate = `{
                 "epoch": {
                     "type": "integer"
                 },
+                "epoch_votes_unavailable": {
+                    "type": "boolean"
+                },
                 "finalized": {
                     "type": "boolean"
                 },
                 "healthy": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "x-nullable": true
                 },
                 "payload_participation": {
                     "type": "number"
@@ -3679,10 +3683,12 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "vote_participation": {
-                    "type": "number"
+                    "type": "number",
+                    "x-nullable": true
                 },
                 "voted_ether": {
-                    "type": "integer"
+                    "type": "integer",
+                    "x-nullable": true
                 }
             }
         },
@@ -3713,6 +3719,9 @@ const docTemplate = `{
                 "epoch": {
                     "type": "integer"
                 },
+                "epoch_votes_unavailable": {
+                    "type": "boolean"
+                },
                 "exits": {
                     "type": "integer"
                 },
@@ -3720,7 +3729,8 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "head_voted": {
-                    "type": "integer"
+                    "type": "integer",
+                    "x-nullable": true
                 },
                 "max_sync_committee_size": {
                     "type": "integer"
@@ -3750,10 +3760,12 @@ const docTemplate = `{
                     "type": "number"
                 },
                 "target_voted": {
-                    "type": "integer"
+                    "type": "integer",
+                    "x-nullable": true
                 },
                 "total_voted": {
-                    "type": "integer"
+                    "type": "integer",
+                    "x-nullable": true
                 },
                 "validator_balance": {
                     "type": "integer"
@@ -3762,7 +3774,8 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "vote_participation": {
-                    "type": "number"
+                    "type": "number",
+                    "x-nullable": true
                 },
                 "voting_finalized": {
                     "type": "boolean"
@@ -3805,11 +3818,15 @@ const docTemplate = `{
                 "epoch": {
                     "type": "integer"
                 },
+                "epoch_votes_unavailable": {
+                    "type": "boolean"
+                },
                 "finalized": {
                     "type": "boolean"
                 },
                 "globalparticipationrate": {
-                    "type": "integer"
+                    "type": "integer",
+                    "x-nullable": true
                 },
                 "missedblocks": {
                     "type": "integer"
@@ -3848,7 +3865,8 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "votedether": {
-                    "type": "integer"
+                    "type": "integer",
+                    "x-nullable": true
                 },
                 "withdrawalcount": {
                     "type": "integer"
@@ -4384,6 +4402,9 @@ const docTemplate = `{
         "api.APINetworkSplitInfo": {
             "type": "object",
             "properties": {
+                "epoch_votes_unavailable": {
+                    "type": "boolean"
+                },
                 "fork_id": {
                     "type": "string"
                 },
@@ -4406,16 +4427,22 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "type": "number"
-                    }
+                    },
+                    "x-nullable": true
                 },
                 "last_epoch_votes": {
                     "type": "array",
                     "items": {
                         "type": "integer"
-                    }
+                    },
+                    "x-nullable": true
+                },
+                "ready_client_count": {
+                    "type": "integer"
                 },
                 "total_chain_weight": {
-                    "type": "integer"
+                    "type": "integer",
+                    "x-nullable": true
                 }
             }
         },
@@ -5196,6 +5223,9 @@ const docTemplate = `{
                 "signature": {
                     "type": "string"
                 },
+                "unique_voter_count": {
+                    "type": "integer"
+                },
                 "validators": {
                     "type": "array",
                     "items": {
@@ -5233,7 +5263,11 @@ const docTemplate = `{
                 "block_root": {
                     "type": "string"
                 },
+                "duties_available": {
+                    "type": "boolean"
+                },
                 "non_voter_count": {
+                    "description": "Unvoted committee seats.",
                     "type": "integer"
                 },
                 "non_voter_percent": {
@@ -5252,9 +5286,20 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "total_ptc_size": {
+                    "description": "Committee seats, including duplicates.",
+                    "type": "integer"
+                },
+                "unique_non_voter_count": {
+                    "type": "integer"
+                },
+                "unique_validator_count": {
+                    "type": "integer"
+                },
+                "unique_voter_count": {
                     "type": "integer"
                 },
                 "vote_count": {
+                    "description": "Total aggregate seat votes.",
                     "type": "integer"
                 },
                 "voted_block_root": {

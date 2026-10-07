@@ -107,3 +107,38 @@ func TestDivergingDutiesStoreAndPrune(t *testing.T) {
 		t.Fatalf("diverging committees should be pruned")
 	}
 }
+
+func TestRoundDutiesMetadataAndCommittees(t *testing.T) {
+	e := testEngine(t, dtypes.PebbleBlockDBConfig{})
+	ctx := context.Background()
+	d := buildDuties(4000, [32]byte{5})
+	d.CommitteeSlotsPerRound = 2
+	d.ValidatorCount = 6
+	d.Committees[2] = d.Committees[0]
+	d.Committees[3] = d.Committees[1]
+	if _, err := e.AddEpochDuties(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.AddDivergingEpochDuties(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := e.GetEpochDuties(ctx, d.FirstSlot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diverging, err := e.GetEpochDutiesForRoot(ctx, d.FirstSlot, d.DependentRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range []*types.EpochDuties{canonical, diverging} {
+		if got.CommitteeSlotsPerRound != 2 || !reflect.DeepEqual(got.Committees, d.Committees) {
+			t.Fatal("stored round period or repeated committees lost")
+		}
+	}
+	for slot := range d.SlotsPerEpoch {
+		got, err := e.GetSlotCommittees(ctx, d.FirstSlot, d.FirstSlot+slot)
+		if err != nil || !reflect.DeepEqual(got, d.Committees[slot]) {
+			t.Fatalf("round slot %d mismatch: %v", slot, err)
+		}
+	}
+}

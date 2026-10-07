@@ -42,6 +42,26 @@ Follow these steps to spin up a full ethereum testnet with the locally build dor
 
 The `make devnet-run` command spins up a kurtosis testnet with multiple client pairs. To stop the testnet after development work, run `make devnet-clean`
 
+## Decoupled consensus networks
+
+When beacon nodes advertise `SLOTS_PER_ROUND`, Dora tracks round checkpoints and
+uses round committees for attester and PTC duties. PTC participation counts seats;
+the API reports unique validators separately because one validator can occupy
+several seats. Payload vote quorum measures same-slot attester support, whereas
+PTC votes included in a block refer to the previous slot.
+
+Use the homepage's Recent Rounds panel for FFG participation. Epoch vote metrics
+are unavailable on these networks: the API sets `epoch_votes_unavailable` and
+returns `null` for the affected vote and health fields. Proposal and payload
+participation remain available.
+
+Existing round-incompatible duty records and historical quorum weights are not
+used to display voter identities or quorum. Reindexing restores correct duties
+and PTC identities. Quorum is recomputed from live source votes; after those
+votes are pruned, historical quorum remains unavailable because stored weights
+have no derivation version. New repeated-round duties use DUTY v3; existing
+v1/v2 records remain readable.
+
 # Thanks To
 
 This explorer is heavily based on the code from [gobitfly/eth2-beaconchain-explorer](https://github.com/gobitfly/eth2-beaconchain-explorer).
@@ -49,4 +69,3 @@ This explorer is heavily based on the code from [gobitfly/eth2-beaconchain-explo
 # License
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-

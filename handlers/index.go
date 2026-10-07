@@ -148,7 +148,7 @@ func buildIndexPageData(ctx context.Context) (*models.IndexPageData, time.Durati
 		pageData.CurrentRound = uint64(currentSlot) / slotsPerRound
 		pageData.CurrentFinalizedRound = int64(finalizedRound)
 		pageData.CurrentJustifiedRound = int64(justifiedRound)
-		pageData.FinalizedRoundSlot = finalizedRound * slotsPerRound
+		pageData.FinalizedRoundSlot = uint64(chainState.GetFinalizedSlot())
 	}
 	if utils.Config.Chain.DisplayName != "" {
 		pageData.NetworkName = utils.Config.Chain.DisplayName
@@ -396,9 +396,10 @@ func buildIndexPageRecentEpochsData(ctx context.Context, pageData *models.IndexP
 		}
 
 		pageData.RecentEpochs = append(pageData.RecentEpochs, &models.IndexPageDataEpochs{
+			EpochVotesUnavailable: chainState.SlotsPerRound() > 0,
 			Epoch:                 epochData.Epoch,
 			Ts:                    chainState.EpochToTime(phase0.Epoch(epochData.Epoch)),
-			Finalized:             uint64(finalizedEpoch) > 0 && uint64(finalizedEpoch) >= epochData.Epoch,
+			Finalized:             chainState.IsEpochFinalized(phase0.Epoch(epochData.Epoch)),
 			Justified:             uint64(justifiedEpoch) > 0 && uint64(justifiedEpoch) >= epochData.Epoch,
 			EligibleEther:         epochData.Eligible,
 			TargetVoted:           epochData.VotedTarget,

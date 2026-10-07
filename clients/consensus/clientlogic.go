@@ -234,22 +234,14 @@ func (client *Client) runClientLogic() error {
 			}
 		}
 
-		if currentEpoch-client.lastFinalityUpdateEpoch >= 1 && client.pool.chainState.SlotToSlotIndex(currentSlot) > 1 {
-			client.lastFinalityUpdateEpoch = currentEpoch
-			go func() {
-				// update finality status
-				if _, err = client.updateFinalityCheckpoints(client.clientCtx); err != nil {
-					client.logger.Errorf("could not get finality checkpoint for %s: %v", client.endpointConfig.Name, err)
-				}
-			}()
-		}
+		client.scheduleFinalityUpdate(currentSlot)
 
-		if (currentEpoch-client.lastFinalityUpdateEpoch >= 1 && client.pool.chainState.SlotToSlotIndex(currentSlot) >= 1) || time.Since(client.lastMetadataUpdateTime) > 10*time.Minute {
-			client.lastFinalityUpdateEpoch = currentEpoch
+		metadataDue := client.reserveMetadataUpdate(currentSlot, time.Now())
+		if metadataDue {
 			go func() {
 				// update node peers
-				if err = client.updateNodeMetadata(client.clientCtx); err != nil {
-					client.logger.Errorf("could not get node metadata for %s: %v", client.endpointConfig.Name, err)
+				if metadataErr := client.updateNodeMetadata(client.clientCtx); metadataErr != nil {
+					client.logger.Errorf("could not get node metadata for %s: %v", client.endpointConfig.Name, metadataErr)
 				} else {
 					client.logger.WithFields(logrus.Fields{"epoch": currentEpoch, "peers": len(client.peers)}).Debug("updated consensus node peers")
 				}
@@ -284,7 +276,9 @@ func (client *Client) updateNodeMetadata(ctx context.Context) error {
 	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	client.headMutex.Lock()
 	client.lastMetadataUpdateTime = time.Now()
+	client.headMutex.Unlock()
 
 	// get node version
 	nodeVersion, err := client.rpcClient.GetNodeVersion(ctx)
@@ -357,31 +351,96 @@ func (client *Client) ForceUpdateChainSpecs(ctx context.Context) error {
 	return client.updateChainSpecs(ctx)
 }
 
+// reserveMetadataUpdate uses its own schedule; metadata must never mark a
+// finality refresh as completed before the checkpoint RPC runs.
+func (client *Client) reserveMetadataUpdate(currentSlot phase0.Slot, now time.Time) bool {
+	chainState := client.pool.chainState
+	currentEpoch := chainState.EpochOfSlot(currentSlot)
+	client.headMutex.Lock()
+	defer client.headMutex.Unlock()
+
+	if (currentEpoch <= client.lastMetadataUpdateEpoch || chainState.SlotToSlotIndex(currentSlot) < 1) && now.Sub(client.lastMetadataUpdateTime) <= 10*time.Minute {
+		return false
+	}
+
+	client.lastMetadataUpdateEpoch = currentEpoch
+	client.lastMetadataUpdateTime = now
+	return true
+}
+
+// reserveFinalityUpdate prevents duplicate periodic requests. On round chains
+// use the observed head round, so a request cannot run before the node processes
+// the boundary block. A failed request may retry once the head advances a slot.
+func (client *Client) reserveFinalityUpdate(currentSlot phase0.Slot) bool {
+	chainState := client.pool.chainState
+	slotsPerRound := chainState.SlotsPerRound()
+	currentEpoch := chainState.EpochOfSlot(currentSlot)
+	client.headMutex.Lock()
+	defer client.headMutex.Unlock()
+
+	if client.finalityUpdatePending {
+		return false
+	}
+
+	if slotsPerRound > 0 {
+		if uint64(client.headSlot)/slotsPerRound <= uint64(client.lastFinalityUpdateSlot)/slotsPerRound || client.headSlot <= client.lastFinalityAttemptSlot {
+			return false
+		}
+		client.lastFinalityAttemptSlot = client.headSlot
+	} else {
+		if currentEpoch <= client.lastFinalityUpdateEpoch || chainState.SlotToSlotIndex(currentSlot) <= 1 || currentSlot <= client.lastFinalityAttemptSlot {
+			return false
+		}
+		client.lastFinalityAttemptSlot = currentSlot
+	}
+
+	client.finalityUpdatePending = true
+	return true
+}
+
+func (client *Client) scheduleFinalityUpdate(currentSlot phase0.Slot) {
+	if !client.reserveFinalityUpdate(currentSlot) {
+		return
+	}
+	go func() {
+		defer func() {
+			client.headMutex.Lock()
+			client.finalityUpdatePending = false
+			client.headMutex.Unlock()
+		}()
+		if _, err := client.updateFinalityCheckpoints(client.clientCtx); err != nil {
+			client.logger.Errorf("could not get finality checkpoint for %s: %v", client.endpointConfig.Name, err)
+		}
+	}()
+}
+
 func (client *Client) updateFinalityCheckpoints(ctx context.Context) (phase0.Root, error) {
+	// SSE finalization notifications and periodic refreshes can arrive together.
+	// Serialize RPCs so an older response never overwrites a newer checkpoint.
+	client.finalityUpdateMutex.Lock()
+	defer client.finalityUpdateMutex.Unlock()
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+
+	client.headMutex.RLock()
+	requestHeadSlot := client.headSlot
+	client.headMutex.RUnlock()
+	requestEpoch := client.pool.chainState.CurrentEpoch()
 
 	finalizedCheckpoints, rounds, err := client.rpcClient.GetFinalityCheckpoints(ctx)
 	if err != nil {
 		return NullRoot, err
 	}
 
-	client.lastFinalityUpdateEpoch = client.pool.chainState.CurrentEpoch()
-
-	// Rounds advance faster than the epochs they translate to, so record them
-	// before the unchanged-justified-root early return below drops the update.
 	client.headMutex.Lock()
-	client.justifiedRound = rounds.Justified
-	client.finalizedRound = rounds.Finalized
-	client.headMutex.Unlock()
-
-	client.pool.chainState.setFinalityRounds(rounds)
-
-	client.headMutex.Lock()
-	if bytes.Equal(client.justifiedRoot[:], finalizedCheckpoints.Justified.Root[:]) {
-		client.headMutex.Unlock()
-		return finalizedCheckpoints.Finalized.Root, nil
+	client.lastFinalityUpdateEpoch = requestEpoch
+	client.lastFinalityUpdateSlot = requestHeadSlot
+	changed := client.justifiedEpoch != finalizedCheckpoints.Justified.Epoch || client.justifiedRoot != finalizedCheckpoints.Justified.Root || client.finalizedEpoch != finalizedCheckpoints.Finalized.Epoch || client.finalizedRoot != finalizedCheckpoints.Finalized.Root
+	if rounds != nil {
+		changed = changed || client.justifiedRound != rounds.Justified || client.finalizedRound != rounds.Finalized
+		client.justifiedRound = rounds.Justified
+		client.finalizedRound = rounds.Finalized
 	}
 
 	client.justifiedEpoch = finalizedCheckpoints.Justified.Epoch
@@ -390,8 +449,10 @@ func (client *Client) updateFinalityCheckpoints(ctx context.Context) (phase0.Roo
 	client.finalizedRoot = finalizedCheckpoints.Finalized.Root
 	client.headMutex.Unlock()
 
-	client.pool.chainState.setFinalizedCheckpoint(finalizedCheckpoints)
-	client.checkpointDispatcher.Fire(finalizedCheckpoints)
+	client.pool.chainState.setFinalizedCheckpoint(finalizedCheckpoints, rounds)
+	if changed {
+		client.checkpointDispatcher.Fire(finalizedCheckpoints)
+	}
 
 	return finalizedCheckpoints.Finalized.Root, nil
 }
@@ -430,7 +491,8 @@ func (client *Client) processFinalizedEvent(evt *v1.FinalizedCheckpointEvent) er
 			time.Sleep(3 * time.Second)
 		}
 
-		client.logger.Debugf("processed finalization_checkpoint event: finalized %v [0x%x], justified %v [0x%x], retry: %v", client.finalizedEpoch, client.finalizedRoot, client.justifiedEpoch, client.justifiedRoot, retry)
+		finalizedEpoch, finalizedRoot, justifiedEpoch, justifiedRoot := client.GetFinalityCheckpoint()
+		client.logger.Debugf("processed finalization_checkpoint event: finalized %v [0x%x], justified %v [0x%x], retry: %v", finalizedEpoch, finalizedRoot, justifiedEpoch, justifiedRoot, retry)
 	}()
 
 	return nil

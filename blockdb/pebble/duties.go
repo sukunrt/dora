@@ -149,13 +149,14 @@ func (e *PebbleEngine) GetEpochDuties(_ context.Context, firstSlot uint64) (*typ
 	}
 
 	d := &types.EpochDuties{
-		FirstSlot:         firstSlot,
-		Epoch:             header.Epoch,
-		ValidatorCount:    header.ValidatorCount,
-		SlotsPerEpoch:     header.SlotsPerEpoch,
-		CommitteesPerSlot: header.CommitteesPerSlot,
-		PtcSize:           header.PtcSize,
-		Committees:        make([][][]uint64, header.SlotsPerEpoch),
+		FirstSlot:              firstSlot,
+		Epoch:                  header.Epoch,
+		ValidatorCount:         header.ValidatorCount,
+		SlotsPerEpoch:          header.SlotsPerEpoch,
+		CommitteesPerSlot:      header.CommitteesPerSlot,
+		CommitteeSlotsPerRound: header.CommitteeSlotsPerRound,
+		PtcSize:                header.PtcSize,
+		Committees:             make([][][]uint64, header.SlotsPerEpoch),
 	}
 	if header.PtcSize > 0 {
 		d.Ptc = make([][]uint64, header.SlotsPerEpoch)
@@ -225,14 +226,15 @@ func (e *PebbleEngine) GetEpochDutiesForRoot(_ context.Context, firstSlot uint64
 	}
 
 	d := &types.EpochDuties{
-		FirstSlot:         firstSlot,
-		Epoch:             header.Epoch,
-		ValidatorCount:    header.ValidatorCount,
-		SlotsPerEpoch:     header.SlotsPerEpoch,
-		CommitteesPerSlot: header.CommitteesPerSlot,
-		PtcSize:           header.PtcSize,
-		DependentRoot:     header.DependentRoot,
-		Committees:        make([][][]uint64, header.SlotsPerEpoch),
+		FirstSlot:              firstSlot,
+		Epoch:                  header.Epoch,
+		ValidatorCount:         header.ValidatorCount,
+		SlotsPerEpoch:          header.SlotsPerEpoch,
+		CommitteesPerSlot:      header.CommitteesPerSlot,
+		CommitteeSlotsPerRound: header.CommitteeSlotsPerRound,
+		PtcSize:                header.PtcSize,
+		DependentRoot:          header.DependentRoot,
+		Committees:             make([][][]uint64, header.SlotsPerEpoch),
 	}
 	if header.PtcSize > 0 {
 		d.Ptc = make([][]uint64, header.SlotsPerEpoch)

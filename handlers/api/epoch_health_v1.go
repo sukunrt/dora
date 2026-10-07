@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/ethpandaops/dora/services"
+	"github.com/ethpandaops/dora/types/models"
 	"github.com/ethpandaops/go-eth2-client/spec/phase0"
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
@@ -16,26 +17,33 @@ import (
 // describe the health of an epoch. Post-ePBS (EIP-7732) a beacon block can be
 // proposed while its execution payload is missing, so payload participation is
 // tracked separately from proposal participation. The chain is only fully
-// healthy for an epoch when all three rates reach 100%.
+// healthy for an epoch when all three rates reach 100%. On round-based networks
+// epoch vote metrics and overall health are unavailable; use round participation.
 type APIEpochHealthResponseV1 struct {
+	EpochVotesUnavailable bool    `json:"epoch_votes_unavailable"`
 	Epoch                 uint64  `json:"epoch"`
 	Ts                    uint64  `json:"ts"`
 	Finalized             bool    `json:"finalized"`
 	EligibleEther         uint64  `json:"eligible_ether"`
-	VotedEther            uint64  `json:"voted_ether"`
-	VoteParticipation     float64 `json:"vote_participation"`
+	VotedEther            uint64  `json:"voted_ether" extensions:"x-nullable"`
+	VoteParticipation     float64 `json:"vote_participation" extensions:"x-nullable"`
 	ProposedBlocks        uint64  `json:"proposed_blocks"`
 	ProposalParticipation float64 `json:"proposal_participation"`
 	ProposedPayloads      uint64  `json:"proposed_payloads"`
 	PayloadParticipation  float64 `json:"payload_participation"`
 	Slots                 uint64  `json:"slots"`
-	Healthy               bool    `json:"healthy"`
+	Healthy               bool    `json:"healthy" extensions:"x-nullable"`
+}
+
+func (data *APIEpochHealthResponseV1) MarshalJSON() ([]byte, error) {
+	type plain APIEpochHealthResponseV1
+	return models.MarshalEpochVotes((*plain)(data), data.EpochVotesUnavailable, "voted_ether", "vote_participation", "healthy")
 }
 
 // ApiEpochHealthV1 godoc
 // @Summary Get epoch health by number, latest, finalized
 // @Tags Epoch
-// @Description Returns the vote, proposal and payload participation rates for an epoch. The chain is only fully healthy when all three reach 100%. Post-ePBS (EIP-7732) payloads are revealed separately from beacon blocks and may be missing.
+// @Description Returns the vote, proposal and payload participation rates for an epoch. The chain is only fully healthy when all three reach 100%. On round-based networks, epoch_votes_unavailable is true and voted_ether, vote_participation, and healthy are null. Post-ePBS (EIP-7732) payloads are revealed separately from beacon blocks and may be missing.
 // @Produce  json
 // @Param  epoch path string true "Epoch number, the string latest or the string finalized"
 // @Success 200 {object} ApiResponse{data=APIEpochHealthResponseV1} "Success"
@@ -75,9 +83,10 @@ func ApiEpochHealthV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := &APIEpochHealthResponseV1{
-		Epoch:     uint64(epoch),
-		Ts:        uint64(chainState.EpochToTime(phase0.Epoch(epoch)).Unix()),
-		Finalized: finalizedEpoch >= phase0.Epoch(epoch),
+		EpochVotesUnavailable: chainState.SlotsPerRound() > 0,
+		Epoch:                 uint64(epoch),
+		Ts:                    uint64(chainState.EpochToTime(phase0.Epoch(epoch)).Unix()),
+		Finalized:             chainState.IsEpochFinalized(phase0.Epoch(epoch)),
 	}
 
 	dbEpochs := services.GlobalBeaconService.GetDbEpochs(r.Context(), uint64(epoch), 1)

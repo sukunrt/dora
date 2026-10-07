@@ -295,8 +295,9 @@
         {{ if .Block.BuilderPayment }}
           {{ with .Block.BuilderPayment }}
           <div class="row border-bottom p-2 mx-0">
-            <div class="col-md-2"><span data-bs-toggle="tooltip" data-bs-placement="top" title="Same-slot attester vote support versus the 60% per-slot quorum. For builder-built blocks, the builder&#39;s (delayed) payment settles only when the quorum is reached.">Payload Vote Quorum:</span></div>
+            <div class="col-md-2"><span data-bs-toggle="tooltip" data-bs-placement="top" title="Same-slot attester votes for this slot (included in later blocks) versus the 60% per-slot quorum. PTC votes in this block refer to the previous slot. For builder-built blocks, the builder&#39;s (delayed) payment settles only when the quorum is reached.">Payload Vote Quorum:</span></div>
             <div class="col-md-10">
+              {{ if .BaseKnown }}
               <div>
                 {{ formatFloat .Percent 2 }}%
                 <small class="text-muted ml-2">({{ formatEthAddCommasFromGwei .Weight }} ETH of {{ formatEthAddCommasFromGwei .Base }} ETH per-slot base)</small>
@@ -313,6 +314,7 @@
                   {{ if and .MetQuorum .PayloadNotIncluded }}<span class="badge rounded-pill text-bg-danger" data-bs-toggle="tooltip" data-bs-placement="top" title="The payload was not included (missed or orphaned), but the vote quorum was reached — the builder&#39;s bid of {{ formatEthAddCommasFromGwei .BidValue }} ETH is still charged and withdrawn from the builder in epoch {{ .WithdrawalEpoch }}.">bid charged, payload not included</span>{{ end }}
                 </span>
               </div>
+              {{ else }}<span class="text-muted">Quorum data unavailable</span>{{ end }}
             </div>
           </div>
           {{ end }}

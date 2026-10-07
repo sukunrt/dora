@@ -573,10 +573,13 @@ definitions:
         type: integer
       epoch:
         type: integer
+      epoch_votes_unavailable:
+        type: boolean
       finalized:
         type: boolean
       healthy:
         type: boolean
+        x-nullable: true
       payload_participation:
         type: number
       proposal_participation:
@@ -591,8 +594,10 @@ definitions:
         type: integer
       vote_participation:
         type: number
+        x-nullable: true
       voted_ether:
         type: integer
+        x-nullable: true
     type: object
   api.APIEpochInfo:
     properties:
@@ -612,12 +617,15 @@ definitions:
         type: integer
       epoch:
         type: integer
+      epoch_votes_unavailable:
+        type: boolean
       exits:
         type: integer
       finalized:
         type: boolean
       head_voted:
         type: integer
+        x-nullable: true
       max_sync_committee_size:
         type: integer
       min_sync_committee_size:
@@ -638,14 +646,17 @@ definitions:
         type: number
       target_voted:
         type: integer
+        x-nullable: true
       total_voted:
         type: integer
+        x-nullable: true
       validator_balance:
         type: integer
       validators:
         type: integer
       vote_participation:
         type: number
+        x-nullable: true
       voting_finalized:
         type: boolean
       voting_justified:
@@ -673,10 +684,13 @@ definitions:
         type: integer
       epoch:
         type: integer
+      epoch_votes_unavailable:
+        type: boolean
       finalized:
         type: boolean
       globalparticipationrate:
         type: integer
+        x-nullable: true
       missedblocks:
         type: integer
       missedpayloads:
@@ -703,6 +717,7 @@ definitions:
         type: integer
       votedether:
         type: integer
+        x-nullable: true
       withdrawalcount:
         type: integer
     type: object
@@ -1055,6 +1070,8 @@ definitions:
     type: object
   api.APINetworkSplitInfo:
     properties:
+      epoch_votes_unavailable:
+        type: boolean
       fork_id:
         type: string
       head_block_hash:
@@ -1071,12 +1088,17 @@ definitions:
         items:
           type: number
         type: array
+        x-nullable: true
       last_epoch_votes:
         items:
           type: integer
         type: array
+        x-nullable: true
+      ready_client_count:
+        type: integer
       total_chain_weight:
         type: integer
+        x-nullable: true
     type: object
   api.APINetworkSplitsData:
     properties:
@@ -1606,6 +1628,8 @@ definitions:
         type: boolean
       signature:
         type: string
+      unique_voter_count:
+        type: integer
       validators:
         items:
           $ref: '#/definitions/api.APISlotPtcValidator'
@@ -1630,7 +1654,10 @@ definitions:
         type: array
       block_root:
         type: string
+      duties_available:
+        type: boolean
       non_voter_count:
+        description: Unvoted committee seats.
         type: integer
       non_voter_percent:
         type: number
@@ -1643,8 +1670,16 @@ definitions:
       slot:
         type: integer
       total_ptc_size:
+        description: Committee seats, including duplicates.
+        type: integer
+      unique_non_voter_count:
+        type: integer
+      unique_validator_count:
+        type: integer
+      unique_voter_count:
         type: integer
       vote_count:
+        description: Total aggregate seat votes.
         type: integer
       voted_block_root:
         type: string
@@ -2583,7 +2618,9 @@ paths:
   /v1/epoch/{epoch}:
     get:
       description: Returns information for a specified epoch by the epoch number or
-        an epoch tag (can be latest or finalized)
+        an epoch tag (can be latest or finalized). On round-based networks, epoch_votes_unavailable
+        is true and globalparticipationrate and votedether are null; use round participation
+        instead.
       operationId: getEpoch
       parameters:
       - description: Epoch number, the string latest or the string finalized
@@ -2668,9 +2705,10 @@ paths:
   /v1/epoch/{epoch}/health:
     get:
       description: Returns the vote, proposal and payload participation rates for
-        an epoch. The chain is only fully healthy when all three reach 100%. Post-ePBS
-        (EIP-7732) payloads are revealed separately from beacon blocks and may be
-        missing.
+        an epoch. The chain is only fully healthy when all three reach 100%. On round-based
+        networks, epoch_votes_unavailable is true and voted_ether, vote_participation,
+        and healthy are null. Post-ePBS (EIP-7732) payloads are revealed separately
+        from beacon blocks and may be missing.
       operationId: getEpochHealth
       parameters:
       - description: Epoch number, the string latest or the string finalized
@@ -2705,7 +2743,10 @@ paths:
     get:
       consumes:
       - application/json
-      description: Returns a list of epochs with detailed information and statistics
+      description: Returns a list of epochs with detailed information and statistics.
+        On round-based networks, epoch_votes_unavailable is true and target_voted,
+        head_voted, total_voted, and vote_participation are null; use round participation
+        instead.
       operationId: getEpochs
       parameters:
       - description: First epoch to display
@@ -2902,7 +2943,9 @@ paths:
       consumes:
       - application/json
       description: Returns information about active network forks/splits, their participation
-        rates, and head blocks
+        rates, and head blocks. On round-based networks, forks follow ready clients'
+        reported heads; epoch_votes_unavailable is true and epoch vote/weight metrics
+        are null. ready_client_count records supporting endpoints, not consensus stake.
       operationId: getNetworkSplits
       parameters:
       - description: 'Include stale forks with no voting weight (default: false)'

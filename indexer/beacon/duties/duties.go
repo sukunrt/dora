@@ -223,7 +223,8 @@ func GetAttesterDuties(spec *consensus.ChainSpec, state *BeaconState, epoch phas
 
 	validatorCount := state.GetActiveCount()
 	committeesPerSlot := SlotCommitteeCount(spec, validatorCount)
-	committeesCount := committeesPerSlot * spec.SlotsPerEpoch
+	slotsPerRound := spec.CommitteeSlotsPerRound()
+	committeesCount := committeesPerSlot * slotsPerRound
 
 	// Save the shuffled indices in cache, this is only needed once per epoch or once per new committee index.
 	shuffledIndices := make([]ActiveIndiceIndex, validatorCount)
@@ -244,7 +245,7 @@ func GetAttesterDuties(spec *consensus.ChainSpec, state *BeaconState, epoch phas
 		committees := [][]ActiveIndiceIndex{}
 
 		for committeeIndex := uint64(0); committeeIndex < committeesPerSlot; committeeIndex++ {
-			indexOffset := committeeIndex + (slotIndex * committeesPerSlot)
+			indexOffset := committeeIndex + ((slotIndex % slotsPerRound) * committeesPerSlot)
 
 			start := SplitOffset(validatorCount, committeesCount, indexOffset)
 			end := SplitOffset(validatorCount, committeesCount, indexOffset+1)
@@ -263,7 +264,7 @@ func GetAttesterDuties(spec *consensus.ChainSpec, state *BeaconState, epoch phas
 }
 
 func SlotCommitteeCount(spec *consensus.ChainSpec, activeValidatorCount uint64) uint64 {
-	var committeesPerSlot = activeValidatorCount / spec.SlotsPerEpoch / spec.TargetCommitteeSize
+	var committeesPerSlot = activeValidatorCount / spec.CommitteeSlotsPerRound() / spec.TargetCommitteeSize
 
 	if committeesPerSlot > spec.MaxCommitteesPerSlot {
 		return spec.MaxCommitteesPerSlot

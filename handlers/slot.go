@@ -33,7 +33,6 @@ import (
 	"github.com/ethpandaops/dora/db"
 	"github.com/ethpandaops/dora/dbtypes"
 	"github.com/ethpandaops/dora/indexer/beacon"
-	"github.com/ethpandaops/dora/indexer/beacon/statetransition"
 	"github.com/ethpandaops/dora/services"
 	"github.com/ethpandaops/dora/templates"
 	"github.com/ethpandaops/dora/types"
@@ -265,7 +264,7 @@ func buildSlotPageData(ctx context.Context, blockSlot int64, blockRoot []byte) (
 		NextSlot:       uint64(slot + 1),
 		PreviousSlot:   uint64(slot - 1),
 		Future:         slot >= currentSlot,
-		EpochFinalized: finalizedEpoch >= chainState.EpochOfSlot(slot),
+		EpochFinalized: chainState.IsSlotFinalized(slot),
 		Badges:         []*models.SlotPageBlockBadge{},
 		TracoorUrl:     utils.Config.Frontend.TracoorUrl,
 		XatuEnabled:    xatu.GlobalClient != nil,
@@ -860,10 +859,7 @@ func getSlotPageBlockData(ctx context.Context, blockData *services.CombinedBlock
 			dbSlot = db.GetSlotByRoot(ctx, blockData.Root[:])
 		}
 		if dbSlot != nil {
-			base := uint64(0)
-			if dbSlot.BuilderPaymentPercent > 0 {
-				base = uint64(float64(dbSlot.BuilderPaymentWeight) / float64(dbSlot.BuilderPaymentPercent) * 100)
-			}
+			payment := resolveSlotBuilderPayment(dbSlot)
 			// A bid at epoch N is settled at the N+1 epoch transition and swept out of the builder
 			// in epoch N+2. Bid value / payload status only apply to builder-built blocks.
 			settleEpoch := uint64(services.GlobalBeaconService.GetChainState().EpochOfSlot(blockData.Header.Message.Slot)) + 2
@@ -873,16 +869,10 @@ func getSlotPageBlockData(ctx context.Context, blockData *services.CombinedBlock
 				bidValue = pageData.PayloadHeader.Value
 				payloadNotIncluded = pageData.PayloadHeader.PayloadStatus != uint16(dbtypes.PayloadStatusCanonical)
 			}
-			pageData.BuilderPayment = &models.SlotPageBuilderPayment{
-				Weight:             dbSlot.BuilderPaymentWeight,
-				Base:               base,
-				Percent:            float64(dbSlot.BuilderPaymentPercent),
-				Quorum:             statetransition.BuilderPaymentQuorumPercent,
-				MetQuorum:          float64(dbSlot.BuilderPaymentPercent) >= statetransition.BuilderPaymentQuorumPercent,
-				PayloadNotIncluded: payloadNotIncluded,
-				BidValue:           bidValue,
-				WithdrawalEpoch:    settleEpoch,
-			}
+			payment.PayloadNotIncluded = payloadNotIncluded
+			payment.BidValue = bidValue
+			payment.WithdrawalEpoch = settleEpoch
+			pageData.BuilderPayment = payment
 		}
 	}
 

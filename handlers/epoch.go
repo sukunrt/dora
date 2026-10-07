@@ -114,7 +114,6 @@ func buildEpochPageData(ctx context.Context, epoch uint64) (*models.EpochPageDat
 	isFuture := phase0.Epoch(epoch) > currentEpoch
 
 	processedEpoch, _ := beaconIndexer.GetBlockCacheState()
-	finalizedEpoch, _ := services.GlobalBeaconService.GetFinalizedEpoch()
 	epochStats := beaconIndexer.GetEpochStats(phase0.Epoch(epoch), nil)
 
 	// Proposer duties for the lookahead window are available from the epoch stats and
@@ -135,14 +134,15 @@ func buildEpochPageData(ctx context.Context, epoch uint64) (*models.EpochPageDat
 	firstSlot := chainState.EpochToSlot(phase0.Epoch(epoch))
 	lastSlot := chainState.EpochToSlot(phase0.Epoch(epoch+1)) - 1
 	pageData := &models.EpochPageData{
-		XatuEnabled:   xatu.GlobalClient != nil,
-		Epoch:         epoch,
-		PreviousEpoch: epoch - 1,
-		NextEpoch:     nextEpoch,
-		Ts:            chainState.SlotToTime(chainState.EpochToSlot(phase0.Epoch(epoch))),
-		Synchronized:  syncedEpoch,
-		Finalized:     finalizedEpoch > 0 && finalizedEpoch >= phase0.Epoch(epoch),
-		Future:        isFuture,
+		EpochVotesUnavailable: chainState.SlotsPerRound() > 0,
+		XatuEnabled:           xatu.GlobalClient != nil,
+		Epoch:                 epoch,
+		PreviousEpoch:         epoch - 1,
+		NextEpoch:             nextEpoch,
+		Ts:                    chainState.SlotToTime(chainState.EpochToSlot(phase0.Epoch(epoch))),
+		Synchronized:          syncedEpoch,
+		Finalized:             chainState.IsEpochFinalized(phase0.Epoch(epoch)),
+		Future:                isFuture,
 	}
 
 	dbEpochs := services.GlobalBeaconService.GetDbEpochs(ctx, epoch, 1)

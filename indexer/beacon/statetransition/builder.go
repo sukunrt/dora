@@ -67,7 +67,7 @@ func processBuilderPendingPayments(s *stateAccessor) []uint16 {
 // New in Gloas: https://github.com/ethereum/consensus-specs/blob/master/specs/gloas/beacon-chain.md#new-get_builder_payment_quorum_threshold
 func getBuilderPaymentQuorumThreshold(s *stateAccessor) uint64 {
 	totalActiveBalance := uint64(s.getTotalActiveBalance())
-	perSlotBalance := totalActiveBalance / s.specs.SlotsPerEpoch
+	perSlotBalance := totalActiveBalance / s.specs.CommitteeSlotsPerRound()
 	return perSlotBalance * BuilderPaymentThresholdNumerator / BuilderPaymentThresholdDenominator
 }
 

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 
 	"github.com/ethpandaops/dora/services"
 	"github.com/ethpandaops/go-eth2-client/spec"
+	"github.com/ethpandaops/go-eth2-client/spec/gloas"
 	"github.com/ethpandaops/go-eth2-client/spec/phase0"
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
@@ -20,17 +22,21 @@ type APISlotPtcVotesResponse struct {
 
 // APISlotPtcVotesData represents the PTC vote summary for a slot.
 type APISlotPtcVotesData struct {
-	Slot            uint64                 `json:"slot"`
-	BlockRoot       string                 `json:"block_root"`
-	VotedSlot       uint64                 `json:"voted_slot"`
-	VotedBlockRoot  string                 `json:"voted_block_root,omitempty"`
-	TotalPtcSize    uint64                 `json:"total_ptc_size"`
-	VoteCount       uint64                 `json:"vote_count"`
-	NonVoterCount   uint64                 `json:"non_voter_count"`
-	NonVoterPercent float64                `json:"non_voter_percent"`
-	Participation   float64                `json:"participation"`
-	Aggregates      []*APISlotPtcAggregate `json:"aggregates"`
-	NonVoters       []APISlotPtcValidator  `json:"non_voters"`
+	Slot                 uint64                 `json:"slot"`
+	BlockRoot            string                 `json:"block_root"`
+	VotedSlot            uint64                 `json:"voted_slot"`
+	VotedBlockRoot       string                 `json:"voted_block_root,omitempty"`
+	TotalPtcSize         uint64                 `json:"total_ptc_size"` // Committee seats, including duplicates.
+	UniqueValidatorCount uint64                 `json:"unique_validator_count"`
+	UniqueVoterCount     uint64                 `json:"unique_voter_count"`
+	UniqueNonVoterCount  uint64                 `json:"unique_non_voter_count"`
+	DutiesAvailable      bool                   `json:"duties_available"`
+	VoteCount            uint64                 `json:"vote_count"`      // Total aggregate seat votes.
+	NonVoterCount        uint64                 `json:"non_voter_count"` // Unvoted committee seats.
+	NonVoterPercent      float64                `json:"non_voter_percent"`
+	Participation        float64                `json:"participation"`
+	Aggregates           []*APISlotPtcAggregate `json:"aggregates"`
+	NonVoters            []APISlotPtcValidator  `json:"non_voters"`
 }
 
 // APISlotPtcAggregate represents a single PTC payload-attestation aggregate.
@@ -42,6 +48,7 @@ type APISlotPtcAggregate struct {
 	VoteCount         uint64                `json:"vote_count"`
 	VotePercent       float64               `json:"vote_percent"`
 	Validators        []APISlotPtcValidator `json:"validators"`
+	UniqueVoterCount  uint64                `json:"unique_voter_count"`
 }
 
 // APISlotPtcValidator is a named validator entry.
@@ -108,7 +115,7 @@ func APISlotPtcVotesV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payloadAttestations := blockData.Block.Message.Body.PayloadAttestations
-	if len(payloadAttestations) == 0 {
+	if resolvedSlot == 0 {
 		writePtcVotesResponse(w, data)
 		return
 	}
@@ -126,34 +133,30 @@ func APISlotPtcVotesV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	beaconIndexer := services.GlobalBeaconService.GetBeaconIndexer()
+	// The included block supplies the default fork context, including orphaned blocks.
+	if !hasFork {
+		depRoot, hasFork = services.GlobalBeaconService.ResolveDependentRoot(r.Context(), votedEpoch, resolvedRoot)
+	}
 	var ptcDuties []phase0.ValidatorIndex
 	if hasFork {
-		// Resolve the PTC on the requested fork (in-memory epoch stats matching
-		// the dependent root, or the diverging-fork blockdb object).
 		ptcDuties = services.GlobalBeaconService.GetSlotPtcForRoot(r.Context(), votedSlot, depRoot)
-	} else {
-		epochStats := beaconIndexer.GetEpochStatsByEpoch(votedEpoch)
-		for _, es := range epochStats {
-			values := es.GetValues(true)
-			if values == nil || values.PtcDuties == nil {
-				continue
-			}
-			slotInEpoch := uint64(votedSlot) % specs.SlotsPerEpoch
-			if slotInEpoch >= uint64(len(values.PtcDuties)) || values.PtcDuties[slotInEpoch] == nil {
-				continue
-			}
-			ptcDuties = make([]phase0.ValidatorIndex, len(values.PtcDuties[slotInEpoch]))
-			for i, activeIdx := range values.PtcDuties[slotInEpoch] {
-				if int(activeIdx) < len(values.ActiveIndices) {
-					ptcDuties[i] = values.ActiveIndices[activeIdx]
-				}
-			}
-			break
-		}
+	} else if !blockData.Orphaned {
+		ptcDuties = services.GlobalBeaconService.GetSlotPtc(r.Context(), votedSlot)
 	}
+	populatePtcVotes(data, payloadAttestations, ptcDuties, specs.PtcSize, func(index uint64) string {
+		return services.GlobalBeaconService.GetValidatorNameAt(index, votedSlot)
+	})
+	writePtcVotesResponse(w, data)
+}
 
-	votedPositions := make(map[uint64]bool, specs.PtcSize)
+// populatePtcVotes counts seats for percentages and reports unique identities separately.
+func populatePtcVotes(data *APISlotPtcVotesData, payloadAttestations []*gloas.PayloadAttestation, ptcDuties []phase0.ValidatorIndex, ptcSize uint64, validatorName func(uint64) string) {
+	data.TotalPtcSize = ptcSize
+	data.DutiesAvailable = uint64(len(ptcDuties)) == ptcSize && ptcSize > 0
+	if !data.DutiesAvailable {
+		ptcDuties = nil
+	}
+	votedPositions := make(map[uint64]bool, ptcSize)
 	totalVotes := uint64(0)
 
 	for _, pa := range payloadAttestations {
@@ -173,8 +176,8 @@ func APISlotPtcVotesV1(w http.ResponseWriter, r *http.Request) {
 		}
 
 		bitCount := uint64(len(pa.AggregationBits)) * 8
-		if bitCount > specs.PtcSize {
-			bitCount = specs.PtcSize
+		if bitCount > ptcSize {
+			bitCount = ptcSize
 		}
 		seenValidators := make(map[uint64]bool)
 		bitVoteCount := uint64(0)
@@ -194,9 +197,10 @@ func APISlotPtcVotesV1(w http.ResponseWriter, r *http.Request) {
 			seenValidators[vidx] = true
 			aggregate.Validators = append(aggregate.Validators, APISlotPtcValidator{
 				Index: vidx,
-				Name:  services.GlobalBeaconService.GetValidatorNameAt(vidx, resolvedSlot),
+				Name:  validatorName(vidx),
 			})
 		}
+		aggregate.UniqueVoterCount = uint64(len(aggregate.Validators))
 		aggregate.VoteCount = bitVoteCount
 		totalVotes += bitVoteCount
 
@@ -221,34 +225,26 @@ func APISlotPtcVotesV1(w http.ResponseWriter, r *http.Request) {
 		for vidx := range nonVoterSet {
 			nonVoters = append(nonVoters, APISlotPtcValidator{
 				Index: vidx,
-				Name:  services.GlobalBeaconService.GetValidatorNameAt(vidx, resolvedSlot),
+				Name:  validatorName(vidx),
 			})
 		}
 		data.NonVoters = nonVoters
-		data.NonVoterCount = uint64(len(nonVoters))
+		sort.Slice(nonVoters, func(i, j int) bool { return nonVoters[i].Index < nonVoters[j].Index })
+		data.UniqueNonVoterCount = uint64(len(nonVoters))
 	}
 
-	totalUniqueValidators := uint64(len(voterSet)) + data.NonVoterCount
-	switch {
-	case totalUniqueValidators > 0:
-		data.TotalPtcSize = totalUniqueValidators
-		data.Participation = float64(len(voterSet)) / float64(totalUniqueValidators)
-		data.NonVoterPercent = float64(data.NonVoterCount) / float64(totalUniqueValidators) * 100
-		for _, agg := range data.Aggregates {
-			agg.VotePercent = float64(agg.VoteCount) / float64(totalUniqueValidators) * 100
-		}
-	case specs.PtcSize > 0:
+	data.UniqueVoterCount = uint64(len(voterSet))
+	data.UniqueValidatorCount = data.UniqueVoterCount + data.UniqueNonVoterCount
+	if ptcSize > 0 {
 		totalVoted := uint64(len(votedPositions))
-		data.NonVoterCount = specs.PtcSize - totalVoted
-		data.Participation = float64(totalVoted) / float64(specs.PtcSize)
-		data.NonVoterPercent = float64(data.NonVoterCount) / float64(specs.PtcSize) * 100
+		data.NonVoterCount = ptcSize - totalVoted
+		data.Participation = float64(totalVoted) / float64(ptcSize)
+		data.NonVoterPercent = float64(data.NonVoterCount) / float64(ptcSize) * 100
 		for _, agg := range data.Aggregates {
-			agg.VotePercent = float64(agg.VoteCount) / float64(specs.PtcSize) * 100
+			agg.VotePercent = float64(agg.VoteCount) / float64(ptcSize) * 100
 		}
 	}
 	data.VoteCount = totalVotes
-
-	writePtcVotesResponse(w, data)
 }
 
 func writePtcVotesResponse(w http.ResponseWriter, data *APISlotPtcVotesData) {

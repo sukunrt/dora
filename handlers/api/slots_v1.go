@@ -304,7 +304,6 @@ func APISlotsV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get chain state for finalization check
-	finalizedEpoch, _ := services.GlobalBeaconService.GetFinalizedEpoch()
 	chainState := services.GlobalBeaconService.GetChainState()
 	currentSlot := chainState.CurrentSlot()
 
@@ -333,7 +332,7 @@ func APISlotsV1(w http.ResponseWriter, r *http.Request) {
 			Slot:         uint64(slot),
 			Epoch:        uint64(chainState.EpochOfSlot(slot)),
 			Time:         chainState.SlotToTime(slot),
-			Finalized:    finalizedEpoch >= chainState.EpochOfSlot(slot),
+			Finalized:    chainState.IsSlotFinalized(slot),
 			Scheduled:    slot >= currentSlot,
 			Proposer:     dbBlock.Proposer,
 			ProposerName: services.GlobalBeaconService.GetValidatorNameAt(dbBlock.Proposer, slot),

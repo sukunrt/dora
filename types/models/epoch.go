@@ -14,6 +14,7 @@ type EpochPageData struct {
 	XatuEnabled             bool      `json:"xatu_enabled"`
 	Finalized               bool      `json:"finalized"`
 	Future                  bool      `json:"future"`
+	EpochVotesUnavailable   bool      `json:"epoch_votes_unavailable"`
 	AttestationCount        uint64    `json:"attestation_count"`
 	DepositCount            uint64    `json:"deposit_count"`
 	ExitCount               uint64    `json:"exit_count"`

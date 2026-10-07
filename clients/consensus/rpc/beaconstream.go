@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	v1 "github.com/ethpandaops/go-eth2-client/api/v1"
 	"github.com/ethpandaops/go-eth2-client/spec/gloas"
@@ -182,8 +183,8 @@ func (bs *BeaconStream) ensureAncillaryStreams(events uint16) {
 	hezeEvents := events & StreamInclusionListEvent
 	bs.startAncillaryStream(hezeEvents)
 
-	// fast confirmation is an optional node feature (not fork gated), so it gets its
-	// own stream that silently gives up if the node rejects the topic
+	// Optional features use separate streams so rejecting one topic cannot stop
+	// events supported by the node.
 	fastConfirmationEvents := events & StreamFastConfirmationEvent
 	bs.startAncillaryStream(fastConfirmationEvents)
 }
@@ -206,7 +207,8 @@ func (bs *BeaconStream) startAncillaryStream(events uint16) {
 
 func (bs *BeaconStream) runAncillaryStream(events uint16) {
 	// streams carrying only optional topics give up when the node rejects the topic
-	optional := events&StreamFastConfirmationEvent == events
+	optionalEvents := StreamInclusionListEvent | StreamFastConfirmationEvent
+	optional := events&optionalEvents == events
 
 	stream := bs.subscribeStream(bs.client.endpoint, events, optional)
 	if stream == nil {
@@ -231,7 +233,7 @@ func (bs *BeaconStream) runAncillaryStream(events uint16) {
 			}
 		case <-stream.Ready:
 		case err := <-stream.Errors:
-			if optional && isUnsupportedTopicError(err) {
+			if optional && isUnsupportedTopicError(err, events) {
 				bs.logger.Debugf("optional beacon event stream not supported by node (events: 0x%x): %v", events, err)
 				return
 			}
@@ -242,12 +244,42 @@ func (bs *BeaconStream) runAncillaryStream(events uint16) {
 	}
 }
 
-// isUnsupportedTopicError checks if the given stream error indicates that the node
-// rejected the event subscription (4xx response, eg. unsupported topics).
-func isUnsupportedTopicError(err error) bool {
+// isUnsupportedTopicError requires an explicit rejection of a requested optional
+// topic. Authentication, rate limiting, and unrelated bad requests must retry.
+func isUnsupportedTopicError(err error, events uint16) bool {
 	var subErr eventstream.SubscriptionError
-	if errors.As(err, &subErr) {
-		return subErr.Code >= 400 && subErr.Code < 500
+	if !errors.As(err, &subErr) || (subErr.Code != http.StatusBadRequest && subErr.Code != http.StatusUnprocessableEntity) {
+		return false
+	}
+
+	message := subErr.Message
+	var response struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(message), &response) == nil {
+		message = response.Message
+	}
+	message = strings.ToLower(message)
+
+	rejected := false
+	for _, reason := range []string{"invalid topic name", "unknown topic", "unsupported topic", "unrecognized topic", "topic not supported", "topic is not supported"} {
+		if strings.Contains(message, reason) {
+			rejected = true
+			break
+		}
+	}
+	if !rejected {
+		return false
+	}
+
+	// Match complete names, avoiding lookalikes such as inclusion_list_extra.
+	for _, word := range strings.FieldsFunc(message, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+	}) {
+		if (events&StreamInclusionListEvent != 0 && word == "inclusion_list") ||
+			(events&StreamFastConfirmationEvent != 0 && word == "fast_confirmation") {
+			return true
+		}
 	}
 
 	return false
@@ -366,7 +398,7 @@ func (bs *BeaconStream) subscribeStream(endpoint string, events uint16, optional
 		}
 
 		if err != nil {
-			if optional && isUnsupportedTopicError(err) {
+			if optional && isUnsupportedTopicError(err, events) {
 				bs.logger.Debugf("optional beacon event stream %v not supported by node: %v", getRedactedURL(streamURL), err)
 				return nil
 			}

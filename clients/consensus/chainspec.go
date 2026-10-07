@@ -479,3 +479,13 @@ func (chain *ChainSpec) Clone() *ChainSpec {
 
 	return res
 }
+
+// CommitteeSlotsPerRound is the number of slots partitioning the active set for
+// attester committees and the per-slot builder-payment quorum. Ordinary networks
+// omit SLOTS_PER_ROUND and partition the set once per epoch.
+func (chain *ChainSpec) CommitteeSlotsPerRound() uint64 {
+	if chain.SlotsPerRound > 0 {
+		return chain.SlotsPerRound
+	}
+	return chain.SlotsPerEpoch
+}

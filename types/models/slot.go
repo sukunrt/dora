@@ -440,8 +440,9 @@ type SlotPageBid struct {
 // attester balance (Weight) versus the per-slot quorum base, and whether it reaches the 60% quorum
 // that settles the builder's (delayed) payment.
 type SlotPageBuilderPayment struct {
+	BaseKnown          bool    `json:"base_known"`
 	Weight             uint64  `json:"weight"`               // Same-slot attester balance backing the payment (Gwei)
-	Base               uint64  `json:"base"`                 // Per-slot quorum base = total active balance / slots-per-epoch (Gwei)
+	Base               uint64  `json:"base"`                 // Per-slot quorum base = total active balance / committee slots per round (Gwei)
 	Percent            float64 `json:"percent"`              // Weight as a percentage of Base
 	Quorum             float64 `json:"quorum"`               // Quorum threshold percentage (60%)
 	MetQuorum          bool    `json:"met_quorum"`           // Whether Percent >= Quorum (payment settles)

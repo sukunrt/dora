@@ -52,7 +52,11 @@ type Client struct {
 	fastConfirmedRoot             phase0.Root
 	fastConfirmedSlot             phase0.Slot
 	lastFastConfirmation          time.Time
+	finalityUpdateMutex           sync.Mutex
 	lastFinalityUpdateEpoch       phase0.Epoch
+	lastFinalityUpdateSlot        phase0.Slot
+	lastFinalityAttemptSlot       phase0.Slot
+	finalityUpdatePending         bool
 	lastMetadataUpdateEpoch       phase0.Epoch
 	lastMetadataUpdateTime        time.Time
 	lastSyncUpdateEpoch           phase0.Epoch

@@ -61,7 +61,6 @@ func buildBlobsPageData(ctx context.Context) (*models.BlobsPageData, time.Durati
 	chainState := services.GlobalBeaconService.GetChainState()
 	specs := chainState.GetSpecs()
 	currentSlot := chainState.CurrentSlot()
-	finalizedEpoch, _ := services.GlobalBeaconService.GetFinalizedEpoch()
 
 	// Calculate thresholds based on MAX_EFFECTIVE_BALANCE
 	// MinEth = 0 (allow non-validators)
@@ -116,7 +115,7 @@ func buildBlobsPageData(ctx context.Context) (*models.BlobsPageData, time.Durati
 	for _, blockData := range blocksData {
 		block := blockData.Block
 		blockSlot := phase0.Slot(block.Slot)
-		finalized := finalizedEpoch > 0 && finalizedEpoch >= chainState.EpochOfSlot(blockSlot)
+		finalized := chainState.IsSlotFinalized(blockSlot)
 
 		var blockNumber uint64
 		if block.EthBlockNumber != nil {

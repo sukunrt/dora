@@ -8,6 +8,7 @@ import (
 
 	"github.com/ethpandaops/dora/indexer/beacon"
 	"github.com/ethpandaops/dora/services"
+	"github.com/ethpandaops/dora/types/models"
 	"github.com/sirupsen/logrus"
 )
 
@@ -28,20 +29,27 @@ type APINetworkSplitsData struct {
 
 // APINetworkSplitInfo represents information about a single network split/fork
 type APINetworkSplitInfo struct {
+	EpochVotesUnavailable  bool      `json:"epoch_votes_unavailable"`
+	ReadyClientCount       int       `json:"ready_client_count"`
 	ForkId                 string    `json:"fork_id"`
 	HeadSlot               uint64    `json:"head_slot"`
 	HeadRoot               string    `json:"head_root"`
 	HeadBlockHash          string    `json:"head_block_hash,omitempty"`
 	HeadExecutionNumber    uint64    `json:"head_execution_number,omitempty"`
-	TotalChainWeight       uint64    `json:"total_chain_weight"`
-	LastEpochVotes         []uint64  `json:"last_epoch_votes"`
-	LastEpochParticipation []float64 `json:"last_epoch_participation"`
+	TotalChainWeight       uint64    `json:"total_chain_weight" extensions:"x-nullable"`
+	LastEpochVotes         []uint64  `json:"last_epoch_votes" extensions:"x-nullable"`
+	LastEpochParticipation []float64 `json:"last_epoch_participation" extensions:"x-nullable"`
 	IsCanonical            bool      `json:"is_canonical"`
+}
+
+func (data *APINetworkSplitInfo) MarshalJSON() ([]byte, error) {
+	type plain APINetworkSplitInfo
+	return models.MarshalEpochVotes((*plain)(data), data.EpochVotesUnavailable, "total_chain_weight", "last_epoch_votes", "last_epoch_participation")
 }
 
 // APINetworkSplitsV1 returns information about active network splits/forks
 // @Summary Get network splits
-// @Description Returns information about active network forks/splits, their participation rates, and head blocks
+// @Description Returns information about active network forks/splits, their participation rates, and head blocks. On round-based networks, forks follow ready clients' reported heads; epoch_votes_unavailable is true and epoch vote/weight metrics are null. ready_client_count records supporting endpoints, not consensus stake.
 // @Tags network
 // @Accept json
 // @Produce json
@@ -83,6 +91,7 @@ func APINetworkSplitsV1(w http.ResponseWriter, r *http.Request) {
 	}
 
 	canonicalForkKeys := services.GlobalBeaconService.GetCanonicalForkKeys()
+	canonicalHead := beaconIndexer.GetCanonicalHead(nil)
 
 	// Build splits information
 	splits := make([]*APINetworkSplitInfo, 0, len(chainHeads))
@@ -95,7 +104,7 @@ func APINetworkSplitsV1(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Filter out stale forks if with_stale is false
-		if !withStale && chainHead.AggregatedHeadVotes == 0 {
+		if !withStale && ((!chainHead.EpochVotesUnavailable && chainHead.AggregatedHeadVotes == 0) || (chainHead.EpochVotesUnavailable && chainHead.ReadyClientCount == 0 && block != canonicalHead)) {
 			continue
 		}
 
@@ -115,6 +124,8 @@ func APINetworkSplitsV1(w http.ResponseWriter, r *http.Request) {
 		}
 
 		split := &APINetworkSplitInfo{
+			EpochVotesUnavailable:  chainHead.EpochVotesUnavailable,
+			ReadyClientCount:       chainHead.ReadyClientCount,
 			ForkId:                 fmt.Sprintf("%x", block.GetForkId()),
 			HeadSlot:               uint64(block.Slot),
 			HeadRoot:               fmt.Sprintf("0x%x", block.Root),

@@ -1,8 +1,19 @@
 package rpc
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/ethpandaops/dora/clients/consensus/rpc/eventstream"
+	"github.com/sirupsen/logrus"
 )
 
 // bidEventPayload is a SignedExecutionPayloadBid container as sent by Nimbus
@@ -44,5 +55,234 @@ func TestParseExecutionPayloadBidEvent(t *testing.T) {
 				t.Errorf("unexpected value: %d", bid.Message.Value)
 			}
 		})
+	}
+}
+
+func TestIsUnsupportedTopicError(t *testing.T) {
+	tests := []struct {
+		name    string
+		code    int
+		message string
+		events  uint16
+		want    bool
+	}{
+		{"prysm inclusion list", 400, `{"message":"inclusion_list: invalid topic name","code":400}`, StreamInclusionListEvent, true},
+		{"plain fast confirmation", 400, `unsupported topic: fast_confirmation`, StreamFastConfirmationEvent, true},
+		{"unprocessable topic", 422, `Unknown topic 'inclusion_list'`, StreamInclusionListEvent, true},
+		{"unrelated bad request", 400, `{"message":"invalid request"}`, StreamInclusionListEvent, false},
+		{"other topic", 400, `fast_confirmation: invalid topic name`, StreamInclusionListEvent, false},
+		{"lookalike topic", 400, `inclusion_list_extra: invalid topic name`, StreamInclusionListEvent, false},
+		{"missing topic name", 400, `invalid topic name`, StreamInclusionListEvent, false},
+		{"temporary topic failure", 400, `inclusion_list is temporarily unavailable`, StreamInclusionListEvent, false},
+		{"unauthorized", 401, `inclusion_list: invalid topic name`, StreamInclusionListEvent, false},
+		{"forbidden", 403, `inclusion_list: invalid topic name`, StreamInclusionListEvent, false},
+		{"missing endpoint", 404, `inclusion_list: invalid topic name`, StreamInclusionListEvent, false},
+		{"rate limited", 429, `inclusion_list: invalid topic name`, StreamInclusionListEvent, false},
+		{"server failure", 500, `inclusion_list: invalid topic name`, StreamInclusionListEvent, false},
+		{"required payload", 400, `execution_payload_available: invalid topic name`, StreamExecutionPayloadEvent, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := fmt.Errorf("subscription failed: %w", eventstream.SubscriptionError{Code: tt.code, Message: tt.message})
+			if got := isUnsupportedTopicError(err, tt.events); got != tt.want {
+				t.Fatalf("isUnsupportedTopicError = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	if isUnsupportedTopicError(errors.New("inclusion_list: invalid topic name"), StreamInclusionListEvent) {
+		t.Fatal("a non-HTTP error must not disable a topic")
+	}
+}
+
+func newTestBeaconStream(t *testing.T, endpoint string) *BeaconStream {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	return &BeaconStream{
+		ctx: ctx, ctxCancel: cancel, logger: logger,
+		client:    &BeaconClient{endpoint: endpoint},
+		ReadyChan: make(chan *BeaconStreamStatus, 10),
+		EventChan: make(chan *BeaconStreamEvent, 10),
+	}
+}
+
+func TestOptionalStreamStopsOnUnsupportedTopic(t *testing.T) {
+	for _, tt := range []struct {
+		topic string
+		event uint16
+	}{
+		{"inclusion_list", StreamInclusionListEvent},
+		{"fast_confirmation", StreamFastConfirmationEvent},
+	} {
+		t.Run(tt.topic, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if got := r.URL.Query().Get("topics"); got != tt.topic {
+					t.Errorf("requested topics = %s, want %s", got, tt.topic)
+				}
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintf(w, `{"message":"%s: invalid topic name","code":400}`, tt.topic)
+			}))
+			t.Cleanup(server.Close)
+			bs := newTestBeaconStream(t, server.URL)
+			done := make(chan struct{})
+			go func() {
+				bs.runAncillaryStream(tt.event)
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("unsupported optional stream kept retrying")
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("subscription attempts = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestOptionalStreamRetriesTemporarySubscriptionFailure(t *testing.T) {
+	for _, tt := range []struct {
+		topic   string
+		event   uint16
+		code    int
+		message string
+	}{
+		{"inclusion_list", StreamInclusionListEvent, 503, `{"message":"temporarily unavailable"}`},
+		{"fast_confirmation", StreamFastConfirmationEvent, 400, `{"message":"temporary backend failure"}`},
+	} {
+		t.Run(tt.topic, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if requests.Add(1) == 1 {
+					w.WriteHeader(tt.code)
+					io.WriteString(w, tt.message)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+			}))
+			t.Cleanup(server.Close)
+			bs := newTestBeaconStream(t, server.URL)
+			result := make(chan *eventstream.Stream, 1)
+			go func() {
+				result <- bs.subscribeStream(server.URL, tt.event, true)
+			}()
+			select {
+			case stream := <-result:
+				if stream == nil {
+					t.Fatal("temporary error disabled optional stream")
+				}
+				select {
+				case <-stream.Ready:
+				case <-time.After(2 * time.Second):
+					t.Fatal("retried stream did not become ready")
+				}
+				bs.Close()
+				stream.Close()
+			case <-time.After(13 * time.Second):
+				t.Fatal("temporary error was not retried")
+			}
+			if got := requests.Load(); got != 2 {
+				t.Fatalf("subscription attempts = %d, want 2", got)
+			}
+		})
+	}
+}
+
+func TestOptionalStreamStopsOnUnsupportedReconnect(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, ": connected\n\n")
+			w.(http.Flusher).Flush()
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"message":"inclusion_list: invalid topic name","code":400}`)
+	}))
+	t.Cleanup(server.Close)
+	bs := newTestBeaconStream(t, server.URL)
+	done := make(chan struct{})
+	go func() {
+		bs.runAncillaryStream(StreamInclusionListEvent)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("unsupported optional reconnect kept retrying")
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("subscription attempts = %d, want 2", got)
+	}
+}
+
+func TestUnsupportedInclusionListPreservesCoreStreams(t *testing.T) {
+	var inclusionRequests atomic.Int32
+	emit := make(chan struct{})
+	root := "0x" + strings.Repeat("00", 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		topics := r.URL.Query().Get("topics")
+		if topics == "inclusion_list" {
+			if inclusionRequests.Add(1) == 1 {
+				close(emit)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"message":"inclusion_list: invalid topic name","code":400}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+		select {
+		case <-emit:
+		case <-r.Context().Done():
+			return
+		}
+		switch topics {
+		case "block,head":
+			fmt.Fprintf(w, "event: block\ndata: {\"slot\":\"1\",\"block\":%q}\n\n", root)
+			fmt.Fprintf(w, "event: head\ndata: {\"slot\":\"1\",\"block\":%q,\"state\":%q}\n\n", root, root)
+		case "execution_payload_available,execution_payload_bid":
+			fmt.Fprintf(w, "event: execution_payload_available\ndata: {\"slot\":\"1\",\"block_root\":%q}\n\n", root)
+			fmt.Fprintf(w, "event: execution_payload_bid\ndata: %s\n\n", bidEventPayload)
+		default:
+			t.Errorf("unexpected requested topics: %s", topics)
+		}
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	bs := newTestBeaconStream(t, server.URL)
+	bs.events = StreamBlockEvent | StreamHeadEvent | StreamExecutionPayloadEvent | StreamExecutionPayloadBidEvent | StreamInclusionListEvent
+	go bs.startStream()
+	seen := uint16(0)
+	want := bs.events &^ StreamInclusionListEvent
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for seen != want {
+		select {
+		case event := <-bs.EventChan:
+			seen |= event.Event
+		case <-timer.C:
+			t.Fatalf("events after topic rejection = 0x%x, want 0x%x", seen, want)
+		}
+	}
+	// Wait beyond the subscription retry interval, including additive updates
+	// that must not restart a topic already found to be unsupported.
+	bs.UpdateEvents(StreamInclusionListEvent)
+	select {
+	case <-time.After(11 * time.Second):
+	case <-bs.ctx.Done():
+		t.Fatal("main stream closed after optional topic rejection")
+	}
+	if got := inclusionRequests.Load(); got != 1 {
+		t.Fatalf("inclusion list attempts = %d, want 1", got)
 	}
 }

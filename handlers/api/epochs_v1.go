@@ -7,6 +7,7 @@ import (
 
 	"github.com/ethpandaops/dora/dbtypes"
 	"github.com/ethpandaops/dora/services"
+	"github.com/ethpandaops/dora/types/models"
 	"github.com/ethpandaops/go-eth2-client/spec/phase0"
 	"github.com/sirupsen/logrus"
 )
@@ -30,6 +31,7 @@ type APIEpochsData struct {
 
 // APIEpochInfo represents information about a single epoch
 type APIEpochInfo struct {
+	EpochVotesUnavailable bool    `json:"epoch_votes_unavailable"`
 	Epoch                 uint64  `json:"epoch"`
 	Finalized             bool    `json:"finalized"`
 	VotingFinalized       bool    `json:"voting_finalized"`
@@ -37,10 +39,10 @@ type APIEpochInfo struct {
 	Validators            uint64  `json:"validators"`
 	ValidatorBalance      uint64  `json:"validator_balance"`
 	EligibleEther         uint64  `json:"eligible_ether"`
-	TargetVoted           uint64  `json:"target_voted"`
-	HeadVoted             uint64  `json:"head_voted"`
-	TotalVoted            uint64  `json:"total_voted"`
-	VoteParticipation     float64 `json:"vote_participation"`
+	TargetVoted           uint64  `json:"target_voted" extensions:"x-nullable"`
+	HeadVoted             uint64  `json:"head_voted" extensions:"x-nullable"`
+	TotalVoted            uint64  `json:"total_voted" extensions:"x-nullable"`
+	VoteParticipation     float64 `json:"vote_participation" extensions:"x-nullable"`
 	Attestations          uint64  `json:"attestations"`
 	Deposits              uint64  `json:"deposits"`
 	DepositsAmount        uint64  `json:"deposits_amount"`
@@ -62,9 +64,15 @@ type APIEpochInfo struct {
 	ConsolidationRequests uint64  `json:"consolidation_requests,omitempty"`
 }
 
+func (data *APIEpochInfo) MarshalJSON() ([]byte, error) {
+	type plain APIEpochInfo
+	return models.MarshalEpochVotes((*plain)(data), data.EpochVotesUnavailable,
+		"target_voted", "head_voted", "total_voted", "vote_participation")
+}
+
 // APIEpochs returns a list of epochs with filters
 // @Summary Get epochs list
-// @Description Returns a list of epochs with detailed information and statistics
+// @Description Returns a list of epochs with detailed information and statistics. On round-based networks, epoch_votes_unavailable is true and target_voted, head_voted, total_voted, and vote_participation are null; use round participation instead.
 // @Tags epochs
 // @Accept json
 // @Produce json
@@ -133,11 +141,12 @@ func APIEpochsV1(w http.ResponseWriter, r *http.Request) {
 	// Fetch epochs data
 	for epoch := firstEpoch; epoch >= lastEpoch && epoch <= firstEpoch; epoch-- {
 		epochInfo := &APIEpochInfo{
-			Epoch: epoch,
+			EpochVotesUnavailable: chainState.SlotsPerRound() > 0,
+			Epoch:                 epoch,
 		}
 
 		// Check if finalized
-		epochInfo.Finalized = int64(finalizedEpoch) >= int64(epoch)
+		epochInfo.Finalized = chainState.IsEpochFinalized(phase0.Epoch(epoch))
 
 		// Get epoch stats from beacon indexer
 		epochStats := services.GlobalBeaconService.GetBeaconIndexer().GetEpochStats(phase0.Epoch(epoch), nil)

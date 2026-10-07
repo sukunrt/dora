@@ -219,39 +219,56 @@ func (cs *ChainState) initWallclock() {
 	})
 }
 
-func (cs *ChainState) setFinalizedCheckpoint(finality *v1.Finality) {
-	cs.finalityMutex.Lock()
-	if cs.finality != nil && finality.Justified.Epoch <= cs.finality.Justified.Epoch && finality.Finalized.Epoch <= cs.finality.Finalized.Epoch {
-		cs.finalityMutex.Unlock()
+// setFinalizedCheckpoint keeps checkpoint roots and round values in the same
+// snapshot. Round checkpoints can advance without changing their API epoch.
+func (cs *ChainState) setFinalizedCheckpoint(finality *v1.Finality, rounds *rpc.FinalityRounds) {
+	if finality == nil {
 		return
+	}
+
+	cs.finalityMutex.Lock()
+	epochAdvanced := cs.finality == nil || finality.Justified.Epoch > cs.finality.Justified.Epoch || finality.Finalized.Epoch > cs.finality.Finalized.Epoch
+	if cs.finality != nil {
+		justifiedAdvanced := finality.Justified.Epoch > cs.finality.Justified.Epoch
+		finalizedAdvanced := finality.Finalized.Epoch > cs.finality.Finalized.Epoch
+		if rounds != nil {
+			justifiedAdvanced = !cs.hasFinalityRnds || rounds.Justified > cs.justifiedRound
+			finalizedAdvanced = !cs.hasFinalityRnds || rounds.Finalized > cs.finalizedRound
+		}
+		if !justifiedAdvanced && !finalizedAdvanced {
+			cs.finalityMutex.Unlock()
+			return
+		}
+
+		// Different clients may report different ages of each checkpoint. Keep
+		// the highest checkpoint independently, including its matching root.
+		updated := *cs.finality
+		if justifiedAdvanced {
+			updated.PreviousJustified = finality.PreviousJustified
+			updated.Justified = finality.Justified
+		}
+		if finalizedAdvanced {
+			updated.Finalized = finality.Finalized
+		}
+		finality = &updated
 	}
 
 	cs.finality = finality
+	if rounds != nil {
+		if rounds.Justified > cs.justifiedRound {
+			cs.justifiedRound = rounds.Justified
+		}
+		if rounds.Finalized > cs.finalizedRound {
+			cs.finalizedRound = rounds.Finalized
+		}
+		cs.hasFinalityRnds = true
+	}
 	cs.finalityMutex.Unlock()
 
-	cs.checkpointDispatcher.Fire(finality)
-}
-
-// setFinalityRounds records the fork's raw round-valued checkpoints. It is
-// separate from setFinalizedCheckpoint because that setter drops same-epoch
-// updates, and several rounds share one epoch. Highest value wins, like
-// setFastConfirmedBlock.
-func (cs *ChainState) setFinalityRounds(rounds *rpc.FinalityRounds) {
-	if rounds == nil {
-		return
-	}
-
-	cs.finalityMutex.Lock()
-	defer cs.finalityMutex.Unlock()
-
-	cs.hasFinalityRnds = true
-
-	if rounds.Justified > cs.justifiedRound {
-		cs.justifiedRound = rounds.Justified
-	}
-
-	if rounds.Finalized > cs.finalizedRound {
-		cs.finalizedRound = rounds.Finalized
+	// The indexer consumes this dispatcher to persist completed epochs. Round
+	// updates refresh the snapshot immediately without scheduling epoch work.
+	if epochAdvanced {
+		cs.checkpointDispatcher.Fire(finality)
 	}
 }
 
@@ -287,6 +304,9 @@ func (cs *ChainState) CurrentRound() uint64 {
 }
 
 func (cs *ChainState) GetSpecs() *ChainSpec {
+	cs.specMutex.RLock()
+	defer cs.specMutex.RUnlock()
+
 	return cs.specs
 }
 
@@ -342,19 +362,64 @@ func (cs *ChainState) GetJustifiedCheckpoint() (phase0.Epoch, phase0.Root) {
 	return cs.finality.Justified.Epoch, cs.finality.Justified.Root
 }
 
+// GetFinalizedSlot returns the inclusive checkpoint slot boundary. A round
+// targets the slot before its start; a standard epoch targets its first slot.
+// Zero means no checkpoint beyond the genesis anchor has finalized yet.
 func (cs *ChainState) GetFinalizedSlot() phase0.Slot {
-	if cs.specs == nil {
+	specs := cs.GetSpecs()
+	if specs == nil {
 		return 0
 	}
 
 	cs.finalityMutex.RLock()
 	defer cs.finalityMutex.RUnlock()
 
+	if specs.SlotsPerRound > 0 {
+		if !cs.hasFinalityRnds || cs.finalizedRound == 0 {
+			return 0
+		}
+		return phase0.Slot(cs.finalizedRound*specs.SlotsPerRound - 1)
+	}
+
 	if cs.finality == nil {
 		return 0
 	}
 
-	return phase0.Slot(cs.finality.Finalized.Epoch) * phase0.Slot(cs.specs.SlotsPerEpoch)
+	return phase0.Slot(cs.finality.Finalized.Epoch) * phase0.Slot(specs.SlotsPerEpoch)
+}
+
+// IsSlotFinalized reports whether the slot is at or before a finalized
+// checkpoint. Epoch numbers alone cannot describe finality within an epoch.
+func (cs *ChainState) IsSlotFinalized(slot phase0.Slot) bool {
+	specs := cs.GetSpecs()
+	if specs == nil {
+		return false
+	}
+
+	cs.finalityMutex.RLock()
+	defer cs.finalityMutex.RUnlock()
+	if specs.SlotsPerRound > 0 {
+		return cs.hasFinalityRnds && cs.finalizedRound > 0 && slot <= phase0.Slot(cs.finalizedRound*specs.SlotsPerRound-1)
+	}
+
+	return cs.finality != nil && cs.finality.Finalized.Epoch > 0 && slot <= phase0.Slot(cs.finality.Finalized.Epoch)*phase0.Slot(specs.SlotsPerEpoch)
+}
+
+// IsEpochFinalized preserves the standard checkpoint-epoch badge semantics.
+// Round checkpoints require the entire epoch to be below their slot boundary.
+func (cs *ChainState) IsEpochFinalized(epoch phase0.Epoch) bool {
+	specs := cs.GetSpecs()
+	if specs == nil || specs.SlotsPerEpoch == 0 {
+		return false
+	}
+
+	if specs.SlotsPerRound == 0 {
+		cs.finalityMutex.RLock()
+		defer cs.finalityMutex.RUnlock()
+		return cs.finality != nil && cs.finality.Finalized.Epoch > 0 && epoch <= cs.finality.Finalized.Epoch
+	}
+
+	return cs.IsSlotFinalized((phase0.Slot(epoch)+1)*phase0.Slot(specs.SlotsPerEpoch) - 1)
 }
 
 func (cs *ChainState) CurrentSlot() phase0.Slot {

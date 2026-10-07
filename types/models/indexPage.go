@@ -66,6 +66,7 @@ type IndexPageDataForks struct {
 }
 
 type IndexPageDataEpochs struct {
+	EpochVotesUnavailable bool      `json:"epoch_votes_unavailable"`
 	Epoch                 uint64    `json:"epoch"`
 	Ts                    time.Time `json:"ts"`
 	Finalized             bool      `json:"finalized"`

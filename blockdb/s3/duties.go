@@ -235,7 +235,7 @@ func (e *S3Engine) GetSlotPtcForRoot(ctx context.Context, firstSlot uint64, slot
 }
 
 // readDutiesHeader reads and decodes the header of a duties object. It reads the
-// full v2 header size (72 bytes) so both v1 and v2 objects decode correctly: a
+// full v2/v3 header size (72 bytes) so all supported objects decode correctly: a
 // v1 object's decoder only consumes the first 40 bytes and ignores the rest.
 // Returns nil, nil if the object does not exist.
 func (e *S3Engine) readDutiesHeader(ctx context.Context, key string) (*types.DutiesHeader, error) {
@@ -247,7 +247,7 @@ func (e *S3Engine) readDutiesHeader(ctx context.Context, key string) (*types.Dut
 }
 
 // readDivergingDutiesHeader reads the header of a diverging duties object (always
-// v2). Returns nil, nil if the object does not exist.
+// v2/v3). Returns nil, nil if the object does not exist.
 func (e *S3Engine) readDivergingDutiesHeader(ctx context.Context, key string) (*types.DutiesHeader, error) {
 	return e.readDutiesHeader(ctx, key)
 }

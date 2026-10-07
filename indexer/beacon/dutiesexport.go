@@ -92,15 +92,16 @@ func BuildEpochDuties(specs *consensus.ChainSpec, epoch phase0.Epoch, values *Ep
 	}
 
 	return &btypes.EpochDuties{
-		FirstSlot:         uint64(epoch) * slotsPerEpoch,
-		Epoch:             uint64(epoch),
-		ValidatorCount:    validatorCount,
-		SlotsPerEpoch:     slotsPerEpoch,
-		CommitteesPerSlot: committeesPerSlot,
-		PtcSize:           ptcSize,
-		Committees:        committees,
-		ProposerDuties:    proposerDuties,
-		Ptc:               ptc,
+		FirstSlot:              uint64(epoch) * slotsPerEpoch,
+		Epoch:                  uint64(epoch),
+		ValidatorCount:         validatorCount,
+		SlotsPerEpoch:          slotsPerEpoch,
+		CommitteesPerSlot:      committeesPerSlot,
+		CommitteeSlotsPerRound: specs.CommitteeSlotsPerRound(),
+		PtcSize:                ptcSize,
+		Committees:             committees,
+		ProposerDuties:         proposerDuties,
+		Ptc:                    ptc,
 	}
 }
 

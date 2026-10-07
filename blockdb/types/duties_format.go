@@ -8,9 +8,9 @@
 //
 // Object layout:
 //
-//	HEADER (v1: 40 bytes, v2: 72 bytes)
+//	HEADER (v1: 40 bytes, v2/v3: 72 bytes)
 //	├── Magic:             [4]byte = "DUTY"
-//	├── Version:           uint16  (1 = legacy, 2 = adds DependentRoot + proposers)
+//	├── Version:           uint16  (1 = legacy, 2 = DependentRoot + proposers, 3 = round committees)
 //	├── Flags:             uint8   (bit 0 = DutiesFlagDiverging)
 //	├── IndexWidth:        uint8   (bytes per validator index, = 6)
 //	├── Epoch:             uint64
@@ -18,16 +18,19 @@
 //	├── SlotsPerEpoch:     uint32
 //	├── CommitteesPerSlot: uint32  (stored so the object reads without spec constants)
 //	├── PtcSize:           uint32  (0 if pre-Gloas)
-//	└── DependentRoot:     [32]byte (v2 only; committee-shuffling dependent root)
-//	ATTESTER SECTION: ValidatorCount * IndexWidth bytes
+//	├── CommitteeSlotsPerRound: uint32 (v3 only; previously reserved bytes 36:40)
+//	└── DependentRoot:     [32]byte (v2/v3; committee-shuffling dependent root)
+//	ATTESTER SECTION: ValidatorCount * (SlotsPerEpoch / CommitteePeriod) * IndexWidth bytes
+//	│   CommitteePeriod = SlotsPerEpoch for v1/v2, CommitteeSlotsPerRound for v3
 //	│   flat list of global validator indices in (slotIndex, committeeIndex, position) order
-//	PROPOSER SECTION: SlotsPerEpoch * IndexWidth bytes (v2 only; one proposer index per slot)
+//	PROPOSER SECTION: SlotsPerEpoch * IndexWidth bytes (v2/v3; one proposer index per slot)
 //	PTC SECTION: SlotsPerEpoch * PtcSize * IndexWidth bytes (omitted if PtcSize == 0)
 package types
 
 import (
 	"encoding/binary"
 	"fmt"
+	"math/bits"
 )
 
 // DutiesMagic identifies a duties object.
@@ -35,15 +38,19 @@ var DutiesMagic = [4]byte{'D', 'U', 'T', 'Y'}
 
 const (
 	// DutiesFormatVersion is the current duties object format version.
-	DutiesFormatVersion uint16 = 2
+	DutiesFormatVersion uint16 = 3
 
 	// DutiesHeaderSize is the fixed header size for version 1 (also the base
-	// layout shared by v2). v2 appends a 32-byte dependent root.
+	// layout shared by v2/v3). v2 appends a 32-byte dependent root.
 	DutiesHeaderSize = 40
 
 	// DutiesHeaderSizeV2 is the fixed header size for version 2 (v1 + 32-byte
 	// dependent root).
 	DutiesHeaderSizeV2 = 72
+
+	// DutiesHeaderSizeV3 keeps the v2 size and stores the committee period in
+	// the four previously reserved header bytes.
+	DutiesHeaderSizeV3 = DutiesHeaderSizeV2
 
 	// DutiesIndexWidth is the number of bytes used to encode a validator index.
 	DutiesIndexWidth uint8 = 6
@@ -64,8 +71,12 @@ func dutiesHeaderSize(version uint16) int64 {
 // dutiesVersion returns the format version to encode the given duties with.
 // v2 (dependent root + proposer section) is selected when a dependent root is
 // set, proposer duties are present, or the object is explicitly diverging;
-// otherwise v1 (the legacy attester+PTC layout) is used.
+// otherwise v1 (the legacy attester+PTC layout) is used. Round committees
+// require v3 when their period differs from the epoch length.
 func dutiesVersion(d *EpochDuties) uint16 {
+	if d.CommitteeSlotsPerRound > 0 && d.CommitteeSlotsPerRound != d.SlotsPerEpoch {
+		return 3
+	}
 	if d.DependentRoot != ([32]byte{}) || len(d.ProposerDuties) > 0 || d.Diverging {
 		return 2
 	}
@@ -74,11 +85,11 @@ func dutiesVersion(d *EpochDuties) uint16 {
 
 // proposerSectionLen returns the byte length of the proposer section for the
 // given version (one index per slot in v2, absent in v1).
-func proposerSectionLen(version uint16, slotsPerEpoch uint64) int64 {
+func proposerSectionLen(version uint16, slotsPerEpoch uint64, indexWidth uint8) int64 {
 	if version < 2 {
 		return 0
 	}
-	return int64(slotsPerEpoch) * int64(DutiesIndexWidth)
+	return int64(slotsPerEpoch) * int64(indexWidth)
 }
 
 // DutiesHeader is the decoded header of a duties object. Section offsets are
@@ -91,9 +102,12 @@ type DutiesHeader struct {
 	ValidatorCount    uint64
 	SlotsPerEpoch     uint64
 	CommitteesPerSlot uint64
-	PtcSize           uint64
+	// CommitteeSlotsPerRound is zero for v1/v2 (one shuffling per epoch).
+	// v3 divides the epoch into rounds, each containing ValidatorCount duties.
+	CommitteeSlotsPerRound uint64
+	PtcSize                uint64
 	// DependentRoot is the committee-shuffling dependent root. Non-zero only in
-	// v2 (diverging-fork) objects; zero for v1 (canonical) objects.
+	// v2/v3 objects; zero for v1 (canonical) objects.
 	DependentRoot [32]byte
 }
 
@@ -105,7 +119,10 @@ type EpochDuties struct {
 	ValidatorCount    uint64
 	SlotsPerEpoch     uint64
 	CommitteesPerSlot uint64
-	PtcSize           uint64
+	// CommitteeSlotsPerRound is zero for v1/v2 (one shuffling per epoch).
+	// v3 divides the epoch into rounds, each containing ValidatorCount duties.
+	CommitteeSlotsPerRound uint64
+	PtcSize                uint64
 
 	// DependentRoot is the committee-shuffling dependent root of the fork these
 	// duties belong to. Set for v2 objects (both canonical and diverging); zero
@@ -144,10 +161,33 @@ func EncodeEpochDuties(d *EpochDuties) ([]byte, error) {
 		return nil, fmt.Errorf("ptc covers %d slots, expected %d", len(d.Ptc), d.SlotsPerEpoch)
 	}
 
-	w := int(DutiesIndexWidth)
 	version := dutiesVersion(d)
-	attesterLen := int(d.ValidatorCount) * w
-	proposerLen := int(proposerSectionLen(version, d.SlotsPerEpoch))
+	h := &DutiesHeader{
+		Version: version, IndexWidth: DutiesIndexWidth, ValidatorCount: d.ValidatorCount,
+		SlotsPerEpoch: d.SlotsPerEpoch, CommitteesPerSlot: d.CommitteesPerSlot,
+		PtcSize: d.PtcSize, CommitteeSlotsPerRound: d.CommitteeSlotsPerRound,
+	}
+	if err := h.validateLayout(); err != nil {
+		return nil, err
+	}
+	// Validate committee dimensions before allocating/writing. Otherwise repeated
+	// round lists can overflow the old single-epoch attester allocation.
+	for slotIndex, committees := range d.Committees {
+		if uint64(len(committees)) != d.CommitteesPerSlot {
+			return nil, fmt.Errorf("slot %d holds %d committees, expected %d", slotIndex, len(committees), d.CommitteesPerSlot)
+		}
+		for committeeIndex, committee := range committees {
+			start := h.attesterCommitteeIndex(uint64(slotIndex), uint64(committeeIndex))
+			end := h.attesterCommitteeIndex(uint64(slotIndex), uint64(committeeIndex)+1)
+			if uint64(len(committee)) != end-start {
+				return nil, fmt.Errorf("slot %d committee %d holds %d indices, expected %d", slotIndex, committeeIndex, len(committee), end-start)
+			}
+		}
+	}
+
+	w := int(DutiesIndexWidth)
+	attesterLen := int(h.attesterIndexCount()) * w
+	proposerLen := int(proposerSectionLen(version, d.SlotsPerEpoch, DutiesIndexWidth))
 	ptcLen := int(d.SlotsPerEpoch) * int(d.PtcSize) * w
 
 	headerSize := int(dutiesHeaderSize(version))
@@ -169,11 +209,11 @@ func EncodeEpochDuties(d *EpochDuties) ([]byte, error) {
 			}
 		}
 	}
-	if written != d.ValidatorCount {
-		return nil, fmt.Errorf("attester duties hold %d indices, expected %d", written, d.ValidatorCount)
+	if written != h.attesterIndexCount() {
+		return nil, fmt.Errorf("attester duties hold %d indices, expected %d", written, h.attesterIndexCount())
 	}
 
-	// Proposer section (v2 only): one index per slot. Missing or out-of-range
+	// Proposer section (v2/v3): one index per slot. Missing or out-of-range
 	// proposers are stored as 0.
 	if version >= 2 {
 		for slotIndex := 0; slotIndex < int(d.SlotsPerEpoch); slotIndex++ {
@@ -214,15 +254,21 @@ func DecodeEpochDuties(firstSlot uint64, data []byte) (*EpochDuties, error) {
 		return nil, err
 	}
 
+	end := h.ptcOffset() + int64(h.SlotsPerEpoch*h.PtcSize)*int64(h.IndexWidth)
+	if int64(len(data)) < end {
+		return nil, fmt.Errorf("data too short for duties sections: %d < %d", len(data), end)
+	}
+
 	d := &EpochDuties{
-		FirstSlot:         firstSlot,
-		Epoch:             h.Epoch,
-		ValidatorCount:    h.ValidatorCount,
-		SlotsPerEpoch:     h.SlotsPerEpoch,
-		CommitteesPerSlot: h.CommitteesPerSlot,
-		PtcSize:           h.PtcSize,
-		DependentRoot:     h.DependentRoot,
-		Diverging:         h.Flags&DutiesFlagDiverging != 0,
+		FirstSlot:              firstSlot,
+		Epoch:                  h.Epoch,
+		ValidatorCount:         h.ValidatorCount,
+		SlotsPerEpoch:          h.SlotsPerEpoch,
+		CommitteesPerSlot:      h.CommitteesPerSlot,
+		CommitteeSlotsPerRound: h.CommitteeSlotsPerRound,
+		PtcSize:                h.PtcSize,
+		DependentRoot:          h.DependentRoot,
+		Diverging:              h.Flags&DutiesFlagDiverging != 0,
 	}
 
 	d.Committees = make([][][]uint64, h.SlotsPerEpoch)
@@ -238,7 +284,7 @@ func DecodeEpochDuties(firstSlot uint64, data []byte) (*EpochDuties, error) {
 		d.Committees[slotIndex] = committees
 	}
 
-	// Proposer section (v2 only): one index per slot.
+	// Proposer section (v2/v3): one index per slot.
 	if h.Version >= 2 {
 		off, length := h.ProposerSectionRange()
 		if int64(len(data)) < off+length {
@@ -327,7 +373,7 @@ func EncodeIndexList(indices []uint64) ([]byte, error) {
 }
 
 // EncodeDutiesHeader returns the fixed-size DUTY header bytes for the epoch.
-// The size depends on the format version: 40 bytes for v1, 72 bytes for v2
+// The size depends on the format version: 40 bytes for v1, 72 bytes for v2/v3
 // (which carries the dependent root and precedes a proposer section).
 func EncodeDutiesHeader(d *EpochDuties) []byte {
 	buf := make([]byte, dutiesHeaderSize(dutiesVersion(d)))
@@ -335,8 +381,8 @@ func EncodeDutiesHeader(d *EpochDuties) []byte {
 	return buf
 }
 
-// writeDutiesHeader writes the DUTY header into the start of buf. It selects v1
-// or v2 based on the duties content; buf must be sized accordingly (see
+// writeDutiesHeader writes the DUTY header into the start of buf. It selects v1,
+// v2, or v3 based on the duties content; buf must be sized accordingly (see
 // dutiesHeaderSize).
 func writeDutiesHeader(buf []byte, d *EpochDuties) {
 	version := dutiesVersion(d)
@@ -353,7 +399,9 @@ func writeDutiesHeader(buf []byte, d *EpochDuties) {
 	binary.BigEndian.PutUint32(buf[24:28], uint32(d.SlotsPerEpoch))
 	binary.BigEndian.PutUint32(buf[28:32], uint32(d.CommitteesPerSlot))
 	binary.BigEndian.PutUint32(buf[32:36], uint32(d.PtcSize))
-	// buf[36:40] reserved
+	if version >= 3 {
+		binary.BigEndian.PutUint32(buf[36:40], uint32(d.CommitteeSlotsPerRound))
+	}
 	if version >= 2 {
 		copy(buf[40:72], d.DependentRoot[:])
 	}
@@ -378,6 +426,9 @@ func DecodeDutiesHeader(b []byte) (*DutiesHeader, error) {
 		CommitteesPerSlot: uint64(binary.BigEndian.Uint32(b[28:32])),
 		PtcSize:           uint64(binary.BigEndian.Uint32(b[32:36])),
 	}
+	if h.Version < 1 || h.Version > DutiesFormatVersion {
+		return nil, fmt.Errorf("unsupported duties version: %d", h.Version)
+	}
 	if h.IndexWidth == 0 || h.IndexWidth > 8 {
 		return nil, fmt.Errorf("invalid duties index width: %d", h.IndexWidth)
 	}
@@ -387,7 +438,72 @@ func DecodeDutiesHeader(b []byte) (*DutiesHeader, error) {
 		}
 		copy(h.DependentRoot[:], b[40:72])
 	}
+	if h.Version >= 3 {
+		h.CommitteeSlotsPerRound = uint64(binary.BigEndian.Uint32(b[36:40]))
+	}
+	if err := h.validateLayout(); err != nil {
+		return nil, err
+	}
 	return h, nil
+}
+
+// committeePeriod is an epoch for legacy objects and a round for v3.
+func (h *DutiesHeader) committeePeriod() uint64 {
+	if h.Version >= 3 {
+		return h.CommitteeSlotsPerRound
+	}
+	return h.SlotsPerEpoch
+}
+
+func (h *DutiesHeader) attesterIndexCount() uint64 {
+	return h.ValidatorCount * (h.SlotsPerEpoch / h.committeePeriod())
+}
+
+func (h *DutiesHeader) validateLayout() error {
+	const maxUint32 = uint64(1<<32 - 1)
+	if h.SlotsPerEpoch == 0 || h.SlotsPerEpoch > maxUint32 || h.CommitteesPerSlot > maxUint32 || h.PtcSize > maxUint32 || h.ValidatorCount > maxIndexValue {
+		return fmt.Errorf("invalid duties dimensions")
+	}
+	period := h.committeePeriod()
+	if period == 0 || period > h.SlotsPerEpoch || h.SlotsPerEpoch%period != 0 {
+		return fmt.Errorf("invalid duties committee period %d for %d slots", period, h.SlotsPerEpoch)
+	}
+	if h.CommitteesPerSlot == 0 && h.ValidatorCount > 0 {
+		return fmt.Errorf("duties have validators but no committees")
+	}
+	// All offset helpers return int64 and encoders allocate with int. Bound
+	// each section and their sum before multiplying potentially large counts.
+	limit := uint64(^uint(0)>>1) - uint64(dutiesHeaderSize(h.Version))
+	width := uint64(h.IndexWidth)
+	rounds := h.SlotsPerEpoch / period
+	if width == 0 || h.ValidatorCount > limit/width/rounds {
+		return fmt.Errorf("duties attester section exceeds supported size")
+	}
+	remaining := limit - h.ValidatorCount*rounds*width
+	if h.Version >= 2 {
+		if h.SlotsPerEpoch > remaining/width {
+			return fmt.Errorf("duties proposer section exceeds supported size")
+		}
+		remaining -= h.SlotsPerEpoch * width
+	}
+	if h.PtcSize > remaining/width/h.SlotsPerEpoch {
+		return fmt.Errorf("duties ptc section exceeds supported size")
+	}
+	return nil
+}
+
+// attesterCommitteeIndex returns a flat position while preserving each round's
+// own split rounding. Splitting the repeated list over the entire epoch would
+// give different committee sizes when ValidatorCount is not evenly divisible.
+func (h *DutiesHeader) attesterCommitteeIndex(slotIndex, committeeIndex uint64) uint64 {
+	period := h.committeePeriod()
+	roundStart := (slotIndex / period) * h.ValidatorCount
+	committeesCount := h.CommitteesPerSlot * period
+	if committeesCount == 0 {
+		return roundStart
+	}
+	localIndex := (slotIndex%period)*h.CommitteesPerSlot + committeeIndex
+	return roundStart + splitOffset(h.ValidatorCount, committeesCount, localIndex)
 }
 
 // attesterOffset returns the byte offset of the attester section.
@@ -395,39 +511,37 @@ func (h *DutiesHeader) attesterOffset() int64 {
 	return dutiesHeaderSize(h.Version)
 }
 
-// proposerOffset returns the byte offset of the proposer section (v2 only).
+// proposerOffset returns the byte offset of the proposer section (v2/v3).
 func (h *DutiesHeader) proposerOffset() int64 {
-	return h.attesterOffset() + int64(h.ValidatorCount)*int64(h.IndexWidth)
+	return h.attesterOffset() + int64(h.attesterIndexCount())*int64(h.IndexWidth)
 }
 
 // ProposerSectionRange returns the byte (offset, length) of the whole proposer
 // section (one index per slot). Length is zero for v1 objects.
 func (h *DutiesHeader) ProposerSectionRange() (offset int64, length int64) {
-	return h.proposerOffset(), proposerSectionLen(h.Version, h.SlotsPerEpoch)
+	return h.proposerOffset(), proposerSectionLen(h.Version, h.SlotsPerEpoch, h.IndexWidth)
 }
 
 // ptcOffset returns the byte offset of the PTC section, which follows the
 // attester and (v2) proposer sections.
 func (h *DutiesHeader) ptcOffset() int64 {
-	return h.proposerOffset() + proposerSectionLen(h.Version, h.SlotsPerEpoch)
+	return h.proposerOffset() + proposerSectionLen(h.Version, h.SlotsPerEpoch, h.IndexWidth)
 }
 
 // splitOffset mirrors duties.SplitOffset: the start index of chunk `index`
 // when listSize items are split into `chunks` contiguous committees. This MUST
 // stay identical to indexer/beacon/duties.SplitOffset.
 func splitOffset(listSize, chunks, index uint64) uint64 {
-	return (listSize * index) / chunks
+	high, low := bits.Mul64(listSize, index)
+	quotient, _ := bits.Div64(high, low, chunks)
+	return quotient
 }
 
 // AttesterSlotRange returns the byte (offset, length) spanning all committees of
 // the given slot in the attester section.
 func (h *DutiesHeader) AttesterSlotRange(slotIndex uint64) (offset int64, length int64) {
-	committeesCount := h.CommitteesPerSlot * h.SlotsPerEpoch
-	if committeesCount == 0 {
-		return h.attesterOffset(), 0
-	}
-	start := splitOffset(h.ValidatorCount, committeesCount, slotIndex*h.CommitteesPerSlot)
-	end := splitOffset(h.ValidatorCount, committeesCount, (slotIndex+1)*h.CommitteesPerSlot)
+	start := h.attesterCommitteeIndex(slotIndex, 0)
+	end := h.attesterCommitteeIndex(slotIndex, h.CommitteesPerSlot)
 	off := h.attesterOffset() + int64(start)*int64(h.IndexWidth)
 	return off, int64(end-start) * int64(h.IndexWidth)
 }
@@ -441,16 +555,15 @@ func (h *DutiesHeader) PtcSlotRange(slotIndex uint64) (offset int64, length int6
 // SplitSlotCommittees splits the raw bytes of a slot's attester span (as returned
 // by an AttesterSlotRange read) into per-committee global validator index lists.
 func (h *DutiesHeader) SplitSlotCommittees(slotIndex uint64, slotBytes []byte) ([][]uint64, error) {
-	committeesCount := h.CommitteesPerSlot * h.SlotsPerEpoch
-	if committeesCount == 0 {
+	if h.CommitteesPerSlot == 0 {
 		return nil, nil
 	}
 	w := uint64(h.IndexWidth)
-	base := splitOffset(h.ValidatorCount, committeesCount, slotIndex*h.CommitteesPerSlot)
+	base := h.attesterCommitteeIndex(slotIndex, 0)
 	committees := make([][]uint64, h.CommitteesPerSlot)
 	for c := uint64(0); c < h.CommitteesPerSlot; c++ {
-		start := splitOffset(h.ValidatorCount, committeesCount, slotIndex*h.CommitteesPerSlot+c) - base
-		end := splitOffset(h.ValidatorCount, committeesCount, slotIndex*h.CommitteesPerSlot+c+1) - base
+		start := h.attesterCommitteeIndex(slotIndex, c) - base
+		end := h.attesterCommitteeIndex(slotIndex, c+1) - base
 		if end*w > uint64(len(slotBytes)) {
 			return nil, fmt.Errorf("slot bytes too short: need %d, got %d", end*w, len(slotBytes))
 		}

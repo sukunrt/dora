@@ -270,7 +270,7 @@ type builderPaymentInfo struct {
 }
 
 // resolveBuilderPaymentBase returns the per-slot quorum base for an epoch's builder payments:
-// get_total_active_balance / SLOTS_PER_EPOCH. Settlement uses the *next* epoch's active balance,
+// get_total_active_balance / committee slots per round. Settlement uses the *next* epoch's active balance,
 // so prefer epoch+1's stats for an exact base and fall back to the current epoch when they are not
 // available yet (e.g. live sync at the head). Returns 0 for pre-Gloas epochs (no builder payments).
 func (dbw *dbWriter) resolveBuilderPaymentBase(epoch phase0.Epoch, epochStats *EpochStats) phase0.Gwei {
@@ -278,8 +278,8 @@ func (dbw *dbWriter) resolveBuilderPaymentBase(epoch phase0.Epoch, epochStats *E
 	if !chainState.IsEip7732Enabled(epoch) {
 		return 0
 	}
-	slotsPerEpoch := phase0.Gwei(chainState.GetSpecs().SlotsPerEpoch)
-	if slotsPerEpoch == 0 {
+	slotsPerRound := phase0.Gwei(chainState.GetSpecs().CommitteeSlotsPerRound())
+	if slotsPerRound == 0 {
 		return 0
 	}
 
@@ -298,7 +298,7 @@ func (dbw *dbWriter) resolveBuilderPaymentBase(epoch phase0.Epoch, epochStats *E
 	if totalActive == 0 {
 		return 0
 	}
-	return totalActive / slotsPerEpoch
+	return totalActive / slotsPerRound
 }
 
 // builderPaymentForSlot resolves the per-slot builder-payment figures from the aggregated epoch
@@ -1647,4 +1647,60 @@ func (dbw *dbWriter) buildDbWithdrawalRequests(block *Block, orphaned bool, over
 	}
 
 	return dbWithdrawalRequests
+}
+
+// GetBuilderPaymentBase returns the per-slot active balance used for payload vote
+// quorum, including slots with zero votes whose base cannot be recovered from a percentage.
+func (indexer *Indexer) GetBuilderPaymentBase(slot phase0.Slot, root phase0.Root) uint64 {
+	chainState := indexer.consensusPool.GetChainState()
+	epoch := chainState.EpochOfSlot(slot)
+	epochStats := indexer.GetEpochStatsByBlockRoot(epoch, root)
+	if base := indexer.dbWriter.resolveBuilderPaymentBase(epoch, epochStats); base > 0 {
+		return uint64(base)
+	}
+	if slotsPerRound := chainState.GetSpecs().CommitteeSlotsPerRound(); slotsPerRound > 0 {
+		for _, e := range db.GetEpochs(indexer.ctx, uint64(epoch+1), 2) {
+			if e.Eligible > 0 {
+				return e.Eligible / slotsPerRound
+			}
+		}
+	}
+	return 0
+}
+
+// GetLiveBuilderPayment resolves quorum figures only when source votes and duties
+// are available. Stored slot weights written by old round-unaware indexers lack
+// a version marker and must not be treated as current protocol results.
+func (indexer *Indexer) GetLiveBuilderPayment(slot phase0.Slot, root phase0.Root) (uint64, uint64, float32, bool) {
+	block := indexer.GetBlockByRoot(root)
+	if block == nil {
+		return 0, 0, 0, false
+	}
+	head := indexer.GetCanonicalHead(&block.forkId)
+	if head == nil || block.Slot > head.Slot || !indexer.IsCanonicalBlockByHead(block, head) {
+		return 0, 0, 0, false
+	}
+	epoch := indexer.consensusPool.GetChainState().EpochOfSlot(slot)
+	stats := indexer.GetEpochStatsByBlockRoot(epoch, root)
+	if stats == nil {
+		return 0, 0, 0, false
+	}
+	values := stats.GetOrLoadValues(indexer.ctx, indexer, true, false)
+	if values == nil {
+		return 0, 0, 0, false
+	}
+	votes := stats.GetEpochVotes(indexer, head)
+	// Settlement uses the next epoch's balance on this same branch, when ready.
+	total := values.EffectiveBalance
+	if next := indexer.GetEpochStatsByBlockRoot(epoch+1, head.Root); next != nil {
+		if values := next.GetValues(false); values != nil && values.EffectiveBalance > 0 {
+			total = values.EffectiveBalance
+		}
+	}
+	base := total / phase0.Gwei(indexer.consensusPool.GetChainState().GetSpecs().CommitteeSlotsPerRound())
+	payment := indexer.dbWriter.builderPaymentForSlot(slot, votes, base)
+	if payment == nil || base == 0 {
+		return 0, 0, 0, false
+	}
+	return payment.Weight, uint64(base), payment.Percent, true
 }

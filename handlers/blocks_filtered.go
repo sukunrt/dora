@@ -304,8 +304,6 @@ func buildFilteredBlocksPageData(ctx context.Context, pageIdx uint64, pageSize u
 	}
 	pageData.LastPageSlot = 0
 
-	finalizedEpoch, _ := services.GlobalBeaconService.GetFinalizedEpoch()
-
 	pageData.Blocks = make([]*models.BlocksFilteredPageDataBlock, 0)
 	blockFilter := &dbtypes.BlockFilter{
 		ExtraData:        extradata,
@@ -483,7 +481,7 @@ func buildFilteredBlocksPageData(ctx context.Context, pageIdx uint64, pageSize u
 			FeeRecipient:        dbBlock.Block.EthFeeRecipient,
 		}
 
-		if finalizedEpoch >= chainState.EpochOfSlot(slot) {
+		if chainState.IsSlotFinalized(slot) {
 			blockData.Status = 1
 		}
 

@@ -207,7 +207,6 @@ func buildSlotsPageData(ctx context.Context, firstSlot uint64, pageSize uint64, 
 	pageData.NextPageLink = fmt.Sprintf("/slots?s=%v&c=%v%v", pageData.NextPageSlot, pageData.PageSize, displayColumnsParam)
 	pageData.LastPageLink = fmt.Sprintf("/slots?s=%v&c=%v%v", pageData.LastPageSlot, pageData.PageSize, displayColumnsParam)
 
-	finalizedEpoch, _ := services.GlobalBeaconService.GetFinalizedEpoch()
 	slotLimit := pageSize - 1
 	var lastSlot uint64
 	if firstSlot > uint64(slotLimit) {
@@ -252,7 +251,7 @@ func buildSlotsPageData(ctx context.Context, firstSlot uint64, pageSize uint64, 
 
 	for slotIdx := int64(firstSlot); slotIdx >= int64(lastSlot); slotIdx-- {
 		slot := uint64(slotIdx)
-		finalized := finalizedEpoch > 0 && finalizedEpoch >= chainState.EpochOfSlot(phase0.Slot(slot))
+		finalized := chainState.IsSlotFinalized(phase0.Slot(slot))
 		if !finalized {
 			allFinalized = false
 		}
@@ -335,13 +334,12 @@ func buildSlotsPageData(ctx context.Context, firstSlot uint64, pageSize uint64, 
 			// Gloas builder-payment quorum (same-slot attester balance vs per-slot base). Only
 			// meaningful for builder-built blocks; the base is recovered from weight/percent.
 			if pageData.DisplayBuilderPayment && dbSlot.Status > 0 && chainState.IsEip7732Enabled(phase0.Epoch(epoch)) {
-				slotData.HasBuilderPayment = true
-				slotData.BuilderPaymentWeight = dbSlot.BuilderPaymentWeight
-				slotData.BuilderPaymentPercent = float64(dbSlot.BuilderPaymentPercent)
-				if dbSlot.BuilderPaymentPercent > 0 {
-					slotData.BuilderPaymentBase = uint64(float64(dbSlot.BuilderPaymentWeight) / float64(dbSlot.BuilderPaymentPercent) * 100)
-				}
-				slotData.BuilderPaymentMetQuorum = float64(dbSlot.BuilderPaymentPercent) >= statetransition.BuilderPaymentQuorumPercent
+				payment := resolveSlotBuilderPayment(dbSlot)
+				slotData.HasBuilderPayment = payment.BaseKnown || chainState.GetSpecs().CommitteeSlotsPerRound() == chainState.GetSpecs().SlotsPerEpoch
+				slotData.BuilderPaymentWeight = payment.Weight
+				slotData.BuilderPaymentBase = payment.Base
+				slotData.BuilderPaymentPercent = payment.Percent
+				slotData.BuilderPaymentMetQuorum = payment.MetQuorum
 			}
 
 			// Add execution times if available
