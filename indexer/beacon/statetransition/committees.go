@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/ethpandaops/dora/clients/consensus"
+	"github.com/ethpandaops/dora/indexer/beacon/duties"
 	"github.com/ethpandaops/go-eth2-client/spec/altair"
 	"github.com/ethpandaops/go-eth2-client/spec/phase0"
 	blsu "github.com/protolambda/bls12-381-util"
@@ -67,15 +68,7 @@ func (c *committeeCache) put(slot phase0.Slot, index uint64, committee []phase0.
 // getCommitteeCountPerSlot returns the number of committees per slot for the given epoch.
 // https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#get_committee_count_per_slot
 func (s *stateAccessor) getCommitteeCountPerSlot(epoch phase0.Epoch) uint64 {
-	activeCount := uint64(len(s.getActiveValidatorIndices(epoch)))
-	committeesPerSlot := activeCount / s.specs.CommitteeSlotsPerRound() / s.specs.TargetCommitteeSize
-	if committeesPerSlot > s.specs.MaxCommitteesPerSlot {
-		committeesPerSlot = s.specs.MaxCommitteesPerSlot
-	}
-	if committeesPerSlot < 1 {
-		committeesPerSlot = 1
-	}
-	return committeesPerSlot
+	return duties.SlotCommitteeCount(s.specs, uint64(len(s.getActiveValidatorIndices(epoch))))
 }
 
 // getBeaconCommittee returns the beacon committee for the given slot and committee index.

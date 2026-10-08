@@ -104,6 +104,10 @@ type ChainSpecConfig struct {
 	AttestationSubnetCount           uint64            `yaml:"ATTESTATION_SUBNET_COUNT"`
 	AttestationSubnetExtraBits       uint64            `yaml:"ATTESTATION_SUBNET_EXTRA_BITS"`
 
+	// FfgCommitteesPerSubnetPerSlot is a Prysm node flag on the decoupled-casper fork.
+	// With 2 or more, committees per slot is this value times ATTESTATION_SUBNET_COUNT.
+	FfgCommitteesPerSubnetPerSlot uint64 `yaml:"FFG_COMMITTEES_PER_SUBNET_PER_SLOT"`
+
 	// Deneb
 	MaxRequestBlocksDeneb            uint64 `yaml:"MAX_REQUEST_BLOCKS_DENEB"              check-if-fork:"DenebForkEpoch"`
 	MinEpochsForBlobSidecarsRequests uint64 `yaml:"MIN_EPOCHS_FOR_BLOB_SIDECARS_REQUESTS" check-if-fork:"DenebForkEpoch"`

@@ -141,9 +141,7 @@
 <script src="/js/knockout.min.js?v={{ assetVersion }}"></script>
 <script type="text/javascript">
   var specValues = {
-    slots_per_epoch: {{ .Block.SlotsPerEpoch }},
-    target_committee_size: {{ .Block.TargetCommitteeSize }},
-    max_committees_per_slot: {{ .Block.MaxCommitteesPerSlot }},
+    committee_slots_per_round: {{ .Block.CommitteeSlotsPerRound }},
   };
   var validatorNames = {};
   JSON.parse({{ includeJSON .Block.ValidatorNames false }}).forEach(function(name) {
@@ -163,25 +161,14 @@
     return Array.from(bytes).map(b => b.toString(16).padStart(2,'0')).join('');
   }
 
-  function getCommitteeCount(activeCount) {
-    var committeesPerSlot = Math.floor(Math.floor(activeCount / specValues.slots_per_epoch) / specValues.target_committee_size);
-    if (committeesPerSlot > specValues.max_committees_per_slot) {
-      return specValues.max_committees_per_slot;
-    }
-    if (committeesPerSlot == 0) {
-      return 1;
-    }
-    return committeesPerSlot;
-  }
-
   function getCommitteeSize(attestation) {
     var activeCount = attestation.total_active;
     var slot = attestation.slot;
     var committeeIdxs = attestation.committeeindex;
 
-    var slotIndex = slot % specValues.slots_per_epoch;
-    var committeesPerSlot = getCommitteeCount(activeCount);
-    var committeesCount = committeesPerSlot * specValues.slots_per_epoch;
+    var slotIndex = slot % specValues.committee_slots_per_round;
+    var committeesPerSlot = attestation.committees_per_slot;
+    var committeesCount = committeesPerSlot * specValues.committee_slots_per_round;
 
     var committeesSizes = [];
     var splitOffset = function(listSize, chunks, index) {

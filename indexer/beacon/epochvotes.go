@@ -285,6 +285,12 @@ func (indexer *Indexer) aggregateEpochVotesAndActivity(epoch phase0.Epoch, chain
 // It returns the total vote amount, the portion of that amount cast by slashed validators (excluded from FFG target weight),
 // and the committee size.
 func (votes *EpochVotes) aggregateVotes(epochStatsValues *EpochStatsValues, slotIndex phase0.Slot, committee uint64, aggregationBits bitfield.Bitfield, aggregationBitsOffset uint64, activityBitlist *bitfield.Bitlist, slashedSet map[duties.ActiveIndiceIndex]bool, updateActivity func(validatorIndex phase0.ValidatorIndex)) (phase0.Gwei, phase0.Gwei, uint64) {
+	// Skip committees that are not in the duties.
+	if int(slotIndex) >= len(epochStatsValues.AttesterDuties) ||
+		committee >= uint64(len(epochStatsValues.AttesterDuties[slotIndex])) {
+		return 0, 0, 0
+	}
+
 	voteAmount := phase0.Gwei(0)
 	slashedVoteAmount := phase0.Gwei(0)
 
@@ -355,9 +361,6 @@ func (votes *EpochVotes) aggregatePaymentVotes(values *EpochStatsValues, slotInd
 		committees = att.CommitteeBits.BitIndices()
 	}
 	for _, committee := range committees {
-		if int(slotIndex) >= len(values.AttesterDuties) || committee >= len(values.AttesterDuties[slotIndex]) {
-			continue
-		}
 		weight, _, size := votes.aggregateVotes(values, slotIndex, uint64(committee), att.AggregationBits, offset, voters, nil, func(phase0.ValidatorIndex) {})
 		amount += weight
 		offset += size

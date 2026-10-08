@@ -265,6 +265,9 @@ func GetAttesterDuties(spec *consensus.ChainSpec, state *BeaconState, epoch phas
 
 func SlotCommitteeCount(spec *consensus.ChainSpec, activeValidatorCount uint64) uint64 {
 	var committeesPerSlot = activeValidatorCount / spec.CommitteeSlotsPerRound() / spec.TargetCommitteeSize
+	if x := spec.FfgCommitteesPerSubnetPerSlot; x >= 2 {
+		committeesPerSlot = x * spec.AttestationSubnetCount
+	}
 
 	if committeesPerSlot > spec.MaxCommitteesPerSlot {
 		return spec.MaxCommitteesPerSlot

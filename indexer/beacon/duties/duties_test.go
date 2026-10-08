@@ -101,3 +101,36 @@ func TestPtcSeatsMatchWeightedSelectionReference(t *testing.T) {
 		t.Fatalf("PTC fingerprint %s, want %s", got, expected)
 	}
 }
+
+// Matches Prysm SlotCommitteeCount with --ffg-committees-per-subnet-per-slot.
+func TestSlotCommitteeCountFfgCommitteesPerSubnetPerSlot(t *testing.T) {
+	for _, tc := range []struct{ x, subnets, active, want uint64 }{
+		{0, 64, 3072, 3},
+		{1, 64, 3072, 3},
+		{2, 2, 3072, 4},
+		{3, 2, 0, 6},
+		{2, 64, 3072, 64},
+	} {
+		specs := committeeTestSpec(8)
+		specs.AttestationSubnetCount = tc.subnets
+		specs.FfgCommitteesPerSubnetPerSlot = tc.x
+		if got := SlotCommitteeCount(specs, tc.active); got != tc.want {
+			t.Errorf("%+v: got %d", tc, got)
+		}
+	}
+
+	specs := committeeTestSpec(8)
+	specs.AttestationSubnetCount = 2
+	specs.FfgCommitteesPerSubnetPerSlot = 2
+	mix := phase0.Hash32{1}
+	state := &BeaconState{RandaoMix: &mix, GetActiveCount: func() uint64 { return 320 }}
+	duties, err := GetAttesterDuties(specs, state, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for slot, committees := range duties {
+		if len(committees) != 4 {
+			t.Fatalf("slot %d has %d committees, want 4", slot, len(committees))
+		}
+	}
+}

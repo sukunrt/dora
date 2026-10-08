@@ -90,9 +90,7 @@ type SlotPageBlockData struct {
 	BidsCount                   uint64                  `json:"bids_count"`
 	PtcVotesCount               uint64                  `json:"ptc_votes_count"`
 
-	SlotsPerEpoch        uint64 `json:"slots_per_epoch"`
-	TargetCommitteeSize  uint64 `json:"target_committee_size"`
-	MaxCommitteesPerSlot uint64 `json:"max_committees_per_slot"`
+	CommitteeSlotsPerRound uint64 `json:"committee_slots_per_round"`
 
 	PayloadHeader          *SlotPagePayloadHeader `json:"payload_header"`
 	ExecutionData          *SlotPageExecutionData `json:"execution_data"`
@@ -213,9 +211,10 @@ type SlotBidSeenObservation struct {
 }
 
 type SlotPageAttestation struct {
-	Slot           uint64   `json:"slot"`
-	CommitteeIndex []uint64 `json:"committeeindex"`
-	TotalActive    uint64   `json:"total_active"`
+	Slot              uint64   `json:"slot"`
+	CommitteeIndex    []uint64 `json:"committeeindex"`
+	TotalActive       uint64   `json:"total_active"`
+	CommitteesPerSlot uint64   `json:"committees_per_slot"`
 
 	AggregationBits    []byte   `json:"aggregationbits"`
 	Validators         []uint64 `json:"validators"`

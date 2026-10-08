@@ -33,6 +33,7 @@ import (
 	"github.com/ethpandaops/dora/db"
 	"github.com/ethpandaops/dora/dbtypes"
 	"github.com/ethpandaops/dora/indexer/beacon"
+	"github.com/ethpandaops/dora/indexer/beacon/duties"
 	"github.com/ethpandaops/dora/services"
 	"github.com/ethpandaops/dora/templates"
 	"github.com/ethpandaops/dora/types"
@@ -519,9 +520,7 @@ func getSlotPageBlockData(ctx context.Context, blockData *services.CombinedBlock
 		Eth1dataDepositcount:   eth1Data.DepositCount,
 		Eth1dataBlockhash:      eth1Data.BlockHash,
 		ValidatorNames:         make([]models.SlotPageValidatorName, 0),
-		SlotsPerEpoch:          specs.SlotsPerEpoch,
-		TargetCommitteeSize:    specs.TargetCommitteeSize,
-		MaxCommitteesPerSlot:   specs.MaxCommitteesPerSlot,
+		CommitteeSlotsPerRound: specs.CommitteeSlotsPerRound(),
 		ProposerSlashingsCount: uint64(len(proposerSlashings)),
 		AttesterSlashingsCount: uint64(len(attesterSlashings)),
 		AttestationsCount:      uint64(len(attestations)),
@@ -582,15 +581,16 @@ func getSlotPageBlockData(ctx context.Context, blockData *services.CombinedBlock
 		}
 
 		attPageData := models.SlotPageAttestation{
-			Slot:            uint64(attData.Slot),
-			TotalActive:     totalActiveValidators,
-			AggregationBits: attAggregationBits,
-			Signature:       attSignature[:],
-			BeaconBlockRoot: attData.BeaconBlockRoot[:],
-			SourceEpoch:     uint64(attData.Source.Epoch),
-			SourceRoot:      attData.Source.Root[:],
-			TargetEpoch:     uint64(attData.Target.Epoch),
-			TargetRoot:      attData.Target.Root[:],
+			Slot:              uint64(attData.Slot),
+			TotalActive:       totalActiveValidators,
+			CommitteesPerSlot: duties.SlotCommitteeCount(specs, totalActiveValidators),
+			AggregationBits:   attAggregationBits,
+			Signature:         attSignature[:],
+			BeaconBlockRoot:   attData.BeaconBlockRoot[:],
+			SourceEpoch:       uint64(attData.Source.Epoch),
+			SourceRoot:        attData.Source.Root[:],
+			TargetEpoch:       uint64(attData.Target.Epoch),
+			TargetRoot:        attData.Target.Root[:],
 		}
 
 		if slot, ok := attHeadBlocks[attData.BeaconBlockRoot]; ok {

@@ -153,3 +153,28 @@ func TestPaymentVotesRepeatAcrossRounds(t *testing.T) {
 		t.Fatalf("duplicate aggregate double counted %d", got)
 	}
 }
+
+// Attestations can name committees that the computed duties do not hold.
+func TestAggregateVotes_SkipsUnknownCommittee(t *testing.T) {
+	values := &EpochStatsValues{
+		ActiveValidators:  2,
+		ActiveIndices:     []phase0.ValidatorIndex{0, 1},
+		EffectiveBalances: []uint32{32, 32},
+		AttesterDuties:    [][][]duties.ActiveIndiceIndex{{{0, 1}}},
+	}
+	bits := bitfield.NewBitlist(4)
+	bits.SetBitAt(2, true)
+	activity := bitfield.NewBitlist(2)
+	votes := &EpochVotes{}
+	for _, tc := range []struct {
+		slot      phase0.Slot
+		committee uint64
+	}{{0, 1}, {0, 2}, {1, 0}} {
+		vote, slashed, size := votes.aggregateVotes(
+			values, tc.slot, tc.committee, bits, 0, &activity, nil, func(phase0.ValidatorIndex) {},
+		)
+		if vote != 0 || slashed != 0 || size != 0 {
+			t.Errorf("%+v: got %d %d %d, want zeros", tc, vote, slashed, size)
+		}
+	}
+}
